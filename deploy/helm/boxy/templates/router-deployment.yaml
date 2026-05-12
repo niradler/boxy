@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "boxy.fullname" . }}-router
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.routerReplicas }}
+  selector:
+    matchLabels:
+      app: boxy-router
+  template:
+    metadata:
+      labels:
+        app: boxy-router
+    spec:
+      serviceAccountName: {{ .Values.routerServiceAccount }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: router
+          image: {{ .Values.imageRouter }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BOXY_LISTEN_ADDR
+              value: ":8080"
+            - name: BOXY_ROUTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: router-token
+            - name: BOXY_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: worker-token
+            - name: BOXY_SANDBOX_NAMESPACE
+              value: {{ include "boxy.sandboxNamespace" . | quote }}
+            - name: BOXY_WORKER_IMAGE
+              value: {{ .Values.imageWorker | quote }}
+            - name: BOXY_WORKER_SERVICE_ACCOUNT
+              value: {{ .Values.workerServiceAccount | quote }}
+            - name: BOXY_WORKER_PORT
+              value: {{ .Values.workerPort | quote }}
+            - name: BOXY_WORKER_CPU
+              value: {{ .Values.workerResources.cpu | quote }}
+            - name: BOXY_WORKER_MEMORY
+              value: {{ .Values.workerResources.memory | quote }}
+            - name: BOXY_REAPER_INTERVAL_SECONDS
+              value: {{ .Values.reaperIntervalSeconds | quote }}
+          resources:
+            {{- toYaml .Values.resourcesRouter | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

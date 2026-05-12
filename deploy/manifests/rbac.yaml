@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: boxy-router
+  namespace: boxy-sandboxes
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: boxy-router
+  namespace: boxy-sandboxes
+subjects:
+  - kind: ServiceAccount
+    name: boxy-router
+    namespace: boxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: boxy-router
