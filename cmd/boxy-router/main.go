@@ -30,6 +30,9 @@ func main() {
 	defer stop()
 	var wg sync.WaitGroup
 	srv.StartReaper(ctx, &wg)
+	startupCtx, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
+	srv.StartupSync(startupCtx)
+	cancelStartup()
 	go func() {
 		slog.Info("listening", "addr", cfg.ListenAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

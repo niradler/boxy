@@ -276,12 +276,43 @@ func WaitForPodIP(ctx context.Context, c kubernetes.Interface, ns, podName strin
 	}
 }
 
+// ErrControllerFull signals to the caller to pick or create a different controller.
+var ErrControllerFull = fmt.Errorf("controller pod is at capacity")
+
+// ClaimSandboxSlot atomically reserves one slot if count < maxSandboxes,
+// else returns ErrControllerFull. Retries on RV conflict.
+func ClaimSandboxSlot(ctx context.Context, c kubernetes.Interface, ns, podName string, maxSandboxes int) error {
+	const maxRetries = 5
+	for range maxRetries {
+		pod, err := c.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		n, _ := strconv.Atoi(pod.Annotations[api.AnnotationSandboxCount])
+		if n >= maxSandboxes {
+			return ErrControllerFull
+		}
+		pod.Annotations[api.AnnotationSandboxCount] = strconv.Itoa(n + 1)
+		_, err = c.CoreV1().Pods(ns).Update(ctx, pod, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if !errors.IsConflict(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("claim sandbox slot conflict after %d retries", maxRetries)
+}
+
 // IncrementSandboxCount atomically bumps the sandbox-count annotation on a controller pod.
 // Uses optimistic concurrency: retries on ResourceVersion conflict so two concurrent
 // callers don't lose updates and oversubscribe a controller's MaxSandboxes budget.
 func IncrementSandboxCount(ctx context.Context, c kubernetes.Interface, ns, podName string, delta int) error {
 	const maxRetries = 5
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for range maxRetries {
 		pod, err := c.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			return err

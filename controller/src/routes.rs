@@ -11,7 +11,10 @@ use crate::{
     error::AppError,
     sandbox_mgr::SandboxManager,
     tls::build_tls_config,
-    types::{CreateSandboxRequest, CreateSandboxResponse, DeleteSandboxRequest, ExecRequest, ExecResponse},
+    types::{
+        CreateSandboxRequest, CreateSandboxResponse, DeleteSandboxRequest, ExecRequest,
+        ExecResponse, ListSandboxesResponse, SandboxSummary,
+    },
 };
 
 #[derive(Clone)]
@@ -53,6 +56,16 @@ async fn delete_sandbox(
     state.mgr.delete(&req.sandbox_id).await
 }
 
+async fn list_sandboxes(State(state): State<AppState>) -> Json<ListSandboxesResponse> {
+    let sandboxes = state
+        .mgr
+        .list_ids()
+        .into_iter()
+        .map(|sandbox_id| SandboxSummary { sandbox_id })
+        .collect();
+    Json(ListSandboxesResponse { sandboxes })
+}
+
 pub async fn serve(cfg: Config) {
     let state = AppState {
         mgr: Arc::new(SandboxManager::new("/usr/local/bin", &cfg)),
@@ -62,6 +75,7 @@ pub async fn serve(cfg: Config) {
     let app = Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/v1/sandboxes", post(create_sandbox))
+        .route("/v1/sandboxes", get(list_sandboxes))
         .route("/v1/exec", post(exec_sandbox))
         .route("/v1/sandboxes", delete(delete_sandbox))
         .with_state(state);

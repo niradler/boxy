@@ -12,6 +12,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+const storeMaxRetries = 8
+
 type SandboxRoute struct {
 	ControllerPodName string `json:"podName"`
 	ControllerIP      string `json:"ip"`
@@ -19,11 +21,13 @@ type SandboxRoute struct {
 }
 
 type SandboxRouteStore struct {
-	c         kubernetes.Interface
-	namespace string
-	name      string
-	mu        sync.RWMutex
-	cache     map[string]SandboxRoute
+	c              kubernetes.Interface
+	namespace      string
+	name           string
+	mu             sync.RWMutex
+	cache          map[string]SandboxRoute
+	onConflictSync func(ctx context.Context, reason string)
+	onParseError   func(ctx context.Context, reason string)
 }
 
 func NewSandboxRouteStore(c kubernetes.Interface, namespace, name string) *SandboxRouteStore {
@@ -33,6 +37,13 @@ func NewSandboxRouteStore(c kubernetes.Interface, namespace, name string) *Sandb
 		name:      name,
 		cache:     map[string]SandboxRoute{},
 	}
+}
+
+// SetSyncHooks wires reconciler triggers for conflict-after-retries and
+// JSON parse errors. Hooks must be non-blocking.
+func (s *SandboxRouteStore) SetSyncHooks(onConflict, onParseError func(ctx context.Context, reason string)) {
+	s.onConflictSync = onConflict
+	s.onParseError = onParseError
 }
 
 func (s *SandboxRouteStore) Get(ctx context.Context, sandboxID string) (SandboxRoute, bool, error) {
@@ -50,16 +61,13 @@ func (s *SandboxRouteStore) Set(ctx context.Context, sandboxID string, route San
 	if err != nil {
 		return err
 	}
-	cm, err := s.ensureConfigMap(ctx)
-	if err != nil {
-		return err
-	}
-	if cm.Data == nil {
-		cm.Data = map[string]string{}
-	}
-	cm.Data[sandboxID] = string(data)
-	_, err = s.c.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
-	if err != nil {
+	encoded := string(data)
+	if err := s.mutateConfigMap(ctx, func(cm *corev1.ConfigMap) {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data[sandboxID] = encoded
+	}); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -69,21 +77,38 @@ func (s *SandboxRouteStore) Set(ctx context.Context, sandboxID string, route San
 }
 
 func (s *SandboxRouteStore) Delete(ctx context.Context, sandboxID string) error {
-	cm, err := s.ensureConfigMap(ctx)
-	if err != nil {
-		return err
-	}
-	if cm.Data != nil {
-		delete(cm.Data, sandboxID)
-	}
-	_, err = s.c.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
-	if err != nil {
+	if err := s.mutateConfigMap(ctx, func(cm *corev1.ConfigMap) {
+		if cm.Data != nil {
+			delete(cm.Data, sandboxID)
+		}
+	}); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	delete(s.cache, sandboxID)
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *SandboxRouteStore) mutateConfigMap(ctx context.Context, mutate func(*corev1.ConfigMap)) error {
+	for range storeMaxRetries {
+		cm, err := s.ensureConfigMap(ctx)
+		if err != nil {
+			return err
+		}
+		mutate(cm)
+		_, err = s.c.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if !errors.IsConflict(err) {
+			return err
+		}
+	}
+	if s.onConflictSync != nil {
+		s.onConflictSync(ctx, "store conflict after retries")
+	}
+	return fmt.Errorf("sandbox route store conflict after %d retries", storeMaxRetries)
 }
 
 func (s *SandboxRouteStore) getFromConfigMap(ctx context.Context, sandboxID string) (SandboxRoute, bool, error) {
@@ -100,6 +125,9 @@ func (s *SandboxRouteStore) getFromConfigMap(ctx context.Context, sandboxID stri
 	}
 	var r SandboxRoute
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		if s.onParseError != nil {
+			s.onParseError(ctx, fmt.Sprintf("corrupt route for %s", sandboxID))
+		}
 		return SandboxRoute{}, false, fmt.Errorf("corrupt route for %s: %w", sandboxID, err)
 	}
 	s.mu.Lock()
@@ -123,5 +151,45 @@ func (s *SandboxRouteStore) ensureConfigMap(ctx context.Context) (*corev1.Config
 		},
 		Data: map[string]string{},
 	}
-	return s.c.CoreV1().ConfigMaps(s.namespace).Create(ctx, cm, metav1.CreateOptions{})
+	created, err := s.c.CoreV1().ConfigMaps(s.namespace).Create(ctx, cm, metav1.CreateOptions{})
+	if err == nil {
+		return created, nil
+	}
+	if errors.IsAlreadyExists(err) {
+		return s.c.CoreV1().ConfigMaps(s.namespace).Get(ctx, s.name, metav1.GetOptions{})
+	}
+	return nil, err
+}
+
+// ReplaceAll overwrites both the memory cache and the backing ConfigMap.
+func (s *SandboxRouteStore) ReplaceAll(ctx context.Context, routes map[string]SandboxRoute) error {
+	encoded := make(map[string]string, len(routes))
+	for id, r := range routes {
+		data, err := json.Marshal(r)
+		if err != nil {
+			return fmt.Errorf("marshal route %s: %w", id, err)
+		}
+		encoded[id] = string(data)
+	}
+	if err := s.mutateConfigMap(ctx, func(cm *corev1.ConfigMap) {
+		cm.Data = encoded
+	}); err != nil {
+		return err
+	}
+	next := make(map[string]SandboxRoute, len(routes))
+	for id, r := range routes {
+		next[id] = r
+	}
+	s.mu.Lock()
+	s.cache = next
+	s.mu.Unlock()
+	return nil
+}
+
+// InvalidateCache drops one entry from memory; the ConfigMap is left for the
+// reconciler to fix.
+func (s *SandboxRouteStore) InvalidateCache(sandboxID string) {
+	s.mu.Lock()
+	delete(s.cache, sandboxID)
+	s.mu.Unlock()
 }

@@ -6,12 +6,38 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 
 	"boxy.dev/boxy/internal/api"
 )
+
+type ControllerHTTPError struct {
+	Method string
+	URL    string
+	Status int
+}
+
+func (e *ControllerHTTPError) Error() string {
+	return fmt.Sprintf("controller returned %d for %s %s", e.Status, e.Method, e.URL)
+}
+
+// IsStaleRouteError reports whether err means the cached route is dead:
+// controller 404 or any transport-level dial/TLS failure.
+func IsStaleRouteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var he *ControllerHTTPError
+	if errors.As(err, &he) {
+		return he.Status == http.StatusNotFound
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
+}
 
 type ControllerClientConfig struct {
 	MTLSDisabled bool
@@ -153,7 +179,7 @@ func (c *ControllerClient) postJSON(ctx context.Context, url string, body, out a
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("controller returned %d for POST %s", resp.StatusCode, url)
+		return &ControllerHTTPError{Method: http.MethodPost, URL: url, Status: resp.StatusCode}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -177,8 +203,7 @@ func (c *ControllerClient) deleteJSON(ctx context.Context, url string, body any)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("controller returned %d for DELETE %s", resp.StatusCode, url)
+		return &ControllerHTTPError{Method: http.MethodDelete, URL: url, Status: resp.StatusCode}
 	}
 	return nil
 }
-

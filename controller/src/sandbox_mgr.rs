@@ -246,6 +246,13 @@ impl SandboxManager {
     pub fn count(&self) -> usize {
         self.sandboxes.len()
     }
+
+    /// Returns the IDs of all live sandboxes managed by this controller.
+    /// Used by the router's SyncReconciler to rebuild routing state from
+    /// ground truth after a restart or cache divergence.
+    pub fn list_ids(&self) -> Vec<String> {
+        self.sandboxes.iter().map(|kv| kv.key().clone()).collect()
+    }
 }
 
 // --- helpers ---

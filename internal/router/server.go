@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -216,6 +217,7 @@ type Server struct {
 	store         *kube.SandboxRouteStore
 	ctrlClient    *ControllerClient
 	ctrlSpec      kube.ControllerPodSpec
+	sync          *SyncReconciler
 }
 
 func NewServer(cfg Config) *Server {
@@ -256,7 +258,31 @@ func NewServer(cfg Config) *Server {
 		LibKrunfwPath:   cfg.LibKrunfwPath,
 		KVMMode:         cfg.KVMMode,
 	}
+	scheme := "https"
+	if cfg.MTLSDisabled {
+		scheme = "http"
+	}
+	s.sync = NewSyncReconciler(SyncReconcilerConfig{
+		Kube:       cfg.Kube,
+		Namespace:  cfg.SandboxNamespace,
+		Store:      s.store,
+		HTTPClient: s.ctrlClient.RawClient(),
+		Scheme:     scheme,
+		Port:       cfg.ControllerPort,
+		Logger:     s.log,
+	})
+	s.store.SetSyncHooks(
+		func(_ context.Context, reason string) { s.sync.TriggerAsync("store-conflict:" + reason) },
+		func(_ context.Context, reason string) { s.sync.TriggerAsync("parse-error:" + reason) },
+	)
 	return s
+}
+
+// StartupSync runs the initial reconcile before serving; failure is non-fatal.
+func (s *Server) StartupSync(ctx context.Context) {
+	if err := s.sync.Trigger(ctx, "startup"); err != nil {
+		s.log.Warn("startup sync failed; serving with lazy recovery", "err", err)
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -352,6 +378,10 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds: body.TimeoutSeconds,
 	})
 	if err != nil {
+		if IsStaleRouteError(err) {
+			s.store.InvalidateCache(body.SandboxID)
+			s.sync.TriggerAsync("exec-stale-route")
+		}
 		s.jsonErr(w, http.StatusBadGateway, err.Error(), "exec")
 		return
 	}
@@ -378,7 +408,7 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	pod, err := kube.SelectOrCreateControllerPod(ctx, s.cfg.Kube, s.ctrlSpec)
+	pod, err := s.claimControllerSeat(ctx)
 	if err != nil {
 		s.jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("controller pod: %v", err), "controller_pod")
 		return
@@ -387,6 +417,7 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		var waitErr error
 		pod, waitErr = kube.WaitForPodIP(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, 30*time.Second)
 		if waitErr != nil {
+			_ = kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, -1)
 			s.jsonErr(w, http.StatusServiceUnavailable, fmt.Sprintf("controller pod not ready: %v", waitErr), "controller_not_ready")
 			return
 		}
@@ -413,6 +444,11 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds:      body.TTLSeconds,
 	}
 	if err := s.ctrlClient.CreateSandbox(ctx, baseURL, req); err != nil {
+		// Release the claimed seat; failure here is corrected later by reaper TTL or sync.
+		if derr := kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, -1); derr != nil {
+			s.log.Warn("release controller seat after create failure",
+				"pod", pod.Name, "err", derr)
+		}
 		s.jsonErr(w, http.StatusBadGateway, fmt.Sprintf("create sandbox: %v", err), "create_sandbox")
 		return
 	}
@@ -427,7 +463,6 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, 1)
 	_ = kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.TTLSeconds)
 
 	resp := &api.SandboxResponseBody{
@@ -441,6 +476,26 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		Ready:     kube.PodRunningReady(pod),
 	}
 	s.writeJSON(w, http.StatusCreated, resp)
+}
+
+// claimControllerSeat reserves capacity on a controller pod before the upstream
+// CreateSandbox call. On Full it retries selection (possibly creating a new pod).
+func (s *Server) claimControllerSeat(ctx context.Context) (*corev1.Pod, error) {
+	const maxAttempts = 4
+	var lastErr error
+	for range maxAttempts {
+		pod, err := kube.SelectOrCreateControllerPod(ctx, s.cfg.Kube, s.ctrlSpec)
+		if err != nil {
+			return nil, err
+		}
+		err = kube.ClaimSandboxSlot(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.MaxSandboxes)
+		if err == nil {
+			return pod, nil
+		}
+		lastErr = err
+		s.log.Info("controller seat claim retry", "pod", pod.Name, "err", err)
+	}
+	return nil, fmt.Errorf("could not claim controller seat after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // handleSandboxGet returns the routing-store view of the sandbox. During the

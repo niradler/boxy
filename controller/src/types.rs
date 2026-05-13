@@ -155,3 +155,13 @@ pub struct ExecResponse {
 pub struct DeleteSandboxRequest {
     pub sandbox_id: String,
 }
+
+#[derive(Debug, Serialize)]
+pub struct SandboxSummary {
+    pub sandbox_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListSandboxesResponse {
+    pub sandboxes: Vec<SandboxSummary>,
+}
