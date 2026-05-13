@@ -12,14 +12,11 @@ import (
 	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"boxy.dev/boxy/internal/api"
-	"boxy.dev/boxy/internal/exec"
 	"boxy.dev/boxy/internal/kube"
 	"boxy.dev/boxy/internal/session"
 )
@@ -47,6 +44,17 @@ type Config struct {
 	SandboxLimits     api.SandboxProvisionLimits
 	Kube              kubernetes.Interface
 	RESTConfig        *rest.Config
+
+	// Controller-pod bin-packing model (new)
+	ControllerImage           string
+	ControllerPort            int32
+	ControllerTTLSec          int
+	MaxSandboxesPerController int
+	ControllerServiceAcct     string
+	MTLSDisabled              bool
+	TLSCAPath                 string
+	TLSClientCertPath         string
+	TLSClientKeyPath          string
 }
 
 func envInt(key string, def int) int {
@@ -59,6 +67,29 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func envStr(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 func mergeAllowCSV(csv string, defaults ...string) map[string]struct{} {
@@ -148,6 +179,16 @@ func ConfigFromEnv() (*Config, error) {
 		SandboxLimits:     limits,
 		Kube:              k,
 		RESTConfig:        rc,
+
+		ControllerImage:           strings.TrimSpace(os.Getenv("BOXY_CONTROLLER_IMAGE")),
+		ControllerPort:            int32(envInt("BOXY_CONTROLLER_PORT", 8080)),
+		ControllerTTLSec:          envInt("BOXY_CONTROLLER_TTL_SECONDS", 3600),
+		MaxSandboxesPerController: envInt("BOXY_MAX_SANDBOXES_PER_CONTROLLER", 20),
+		ControllerServiceAcct:     strings.TrimSpace(os.Getenv("BOXY_CONTROLLER_SERVICE_ACCOUNT")),
+		MTLSDisabled:              envBool("BOXY_MTLS_DISABLED", false),
+		TLSCAPath:                 envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
+		TLSClientCertPath:         envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
+		TLSClientKeyPath:          envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8080"
@@ -160,13 +201,16 @@ type Server struct {
 	log           *slog.Logger
 	sem           chan struct{}
 	httpTransport *http.Transport
+	store         *kube.SandboxRouteStore
+	ctrlClient    *ControllerClient
+	ctrlSpec      kube.ControllerPodSpec
 }
 
 func NewServer(cfg Config) *Server {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
 	}
-	return &Server{
+	s := &Server{
 		cfg: cfg,
 		log: slog.Default(),
 		sem: make(chan struct{}, cfg.MaxConcurrency),
@@ -177,6 +221,23 @@ func NewServer(cfg Config) *Server {
 			ForceAttemptHTTP2:   true,
 		},
 	}
+	s.store = kube.NewSandboxRouteStore(cfg.Kube, cfg.SandboxNamespace, "boxy-sandbox-routes")
+	s.ctrlClient = NewControllerClient(ControllerClientConfig{
+		MTLSDisabled: cfg.MTLSDisabled,
+		CACertPath:   cfg.TLSCAPath,
+		ClientCert:   cfg.TLSClientCertPath,
+		ClientKey:    cfg.TLSClientKeyPath,
+	})
+	s.ctrlSpec = kube.ControllerPodSpec{
+		Namespace:       cfg.SandboxNamespace,
+		ControllerImage: cfg.ControllerImage,
+		MaxSandboxes:    cfg.MaxSandboxesPerController,
+		Port:            cfg.ControllerPort,
+		TTLSeconds:      cfg.ControllerTTLSec,
+		PullSecretName:  cfg.PullSecret,
+		ServiceAccount:  cfg.ControllerServiceAcct,
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -221,6 +282,12 @@ func (s *Server) jsonErr(w http.ResponseWriter, code int, msg, cerr string) {
 	_ = json.NewEncoder(w).Encode(api.ErrorBody{Error: msg, Code: cerr})
 }
 
+func (s *Server) writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.sem <- struct{}{}:
@@ -238,95 +305,46 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
 		return
 	}
-	if api.PodRefEmpty(&body.PodRef) {
-		p, err := kube.GetSandboxPodForSession(r.Context(), s.cfg.Kube, s.cfg.SandboxNamespace, body.SandboxID, body.SessionID)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				s.jsonErr(w, http.StatusNotFound, "sandbox not found", "sandbox_lookup")
-				return
-			}
-			s.jsonErr(w, http.StatusInternalServerError, err.Error(), "")
-			return
-		}
-		body.PodRef = api.PodRef{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID)}
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(body.TimeoutSeconds)*time.Second)
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(body.TimeoutSeconds)*time.Second+5*time.Second)
 	defer cancel()
-	pod, err := kube.ValidatePodForExec(ctx, s.cfg.Kube, body.SessionID, body.SandboxID, &body.PodRef)
-	if err != nil {
-		s.jsonErr(w, http.StatusForbidden, err.Error(), "pod_validation")
-		return
-	}
-	switch body.Mode {
-	case api.ExecModeAPI:
-		s.doAPIExec(w, ctx, pod, &body)
-	case api.ExecModePod:
-		s.doPodExec(w, ctx, pod, &body)
-	default:
-		s.jsonErr(w, http.StatusBadRequest, "invalid mode", "")
-	}
-}
 
-func (s *Server) doAPIExec(w http.ResponseWriter, ctx context.Context, pod *corev1.Pod, body *api.ExecRequestBody) {
-	base, err := kube.WorkerHTTPAddr(pod, s.cfg.WorkerPort)
+	route, ok, err := s.store.Get(ctx, body.SandboxID)
 	if err != nil {
-		s.jsonErr(w, http.StatusBadGateway, err.Error(), "pod_ip")
+		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
 		return
 	}
-	client := &http.Client{
-		Transport: s.httpTransport,
-		Timeout:   time.Duration(body.TimeoutSeconds)*time.Second + 5*time.Second,
-	}
-	apiExec := &exec.APIExecClient{HTTP: client, Token: s.cfg.WorkerToken, MaxBody: s.cfg.MaxBodyBytes}
-	out, err := apiExec.Run(ctx, base, body, s.cfg.MaxOutputBytes)
-	if err != nil {
-		s.jsonErr(w, http.StatusBadGateway, err.Error(), "api_exec")
+	if !ok {
+		s.jsonErr(w, http.StatusNotFound, "sandbox not found", "sandbox_lookup")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, out)
-}
 
-func (s *Server) doPodExec(w http.ResponseWriter, ctx context.Context, pod *corev1.Pod, body *api.ExecRequestBody) {
-	script, err := exec.BuildRemoteShell(body.Command, body.Args, body.Env)
-	if err != nil {
-		s.jsonErr(w, http.StatusBadRequest, err.Error(), "")
-		return
+	scheme := "https"
+	if s.cfg.MTLSDisabled {
+		scheme = "http"
 	}
-	cmd := []string{"/bin/sh", "-lc", script}
-	stdout := exec.NewLimitedWriter(s.cfg.MaxOutputBytes)
-	stderr := exec.NewLimitedWriter(s.cfg.MaxOutputBytes)
-	ctr := body.WorkerContainer
-	if ctr == "" {
-		ctr = "worker"
-	}
-	pe := &exec.PodExec{
-		Config:    s.cfg.RESTConfig,
-		Clientset: s.cfg.Kube,
-		Namespace: pod.Namespace,
-		Pod:       pod.Name,
-		Container: ctr,
-		Command:   cmd,
-		Stdout:    stdout,
-		Stderr:    stderr,
-	}
-	err = pe.Run(ctx)
-	if stdout.HitLimit() || stderr.HitLimit() {
-		s.jsonErr(w, http.StatusRequestEntityTooLarge, "output limit exceeded", "output_limit")
-		return
-	}
-	exit := exec.ExitCodeFromExecError(err)
-	resp := api.ExecResponseBody{
-		ExitCode: exit,
-		Stdout:   string(stdout.Bytes()),
-		Stderr:   string(stderr.Bytes()),
-	}
-	s.writeJSON(w, http.StatusOK, &resp)
-}
+	baseURL := fmt.Sprintf("%s://%s:%d", scheme, route.ControllerIP, route.Port)
 
-func (s *Server) writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	result, err := s.ctrlClient.Exec(ctx, baseURL, ExecReq{
+		SandboxID:      body.SandboxID,
+		Command:        body.Command,
+		Args:           body.Args,
+		Env:            body.Env,
+		TimeoutSeconds: body.TimeoutSeconds,
+	})
+	if err != nil {
+		s.jsonErr(w, http.StatusBadGateway, err.Error(), "exec")
+		return
+	}
+
+	_ = kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, route.ControllerPodName, s.ctrlSpec.TTLSeconds)
+
+	s.writeJSON(w, http.StatusOK, &api.ExecResponseBody{
+		Stdout:   result.Stdout,
+		Stderr:   result.Stderr,
+		ExitCode: result.ExitCode,
+		TimedOut: result.TimedOut,
+	})
 }
 
 func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
@@ -340,46 +358,88 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	spec := kube.SandboxPodSpec{
-		Namespace:      s.cfg.SandboxNamespace,
-		WorkerImage:    s.cfg.WorkerImage,
-		ServiceAccount: s.cfg.WorkerServiceAcct,
-		WorkerPort:     s.cfg.WorkerPort,
-		WorkerToken:    s.cfg.WorkerToken,
-		PullSecretName: s.cfg.PullSecret,
-		ResourceCPU:    s.cfg.ResourceCPU,
-		ResourceMemory: s.cfg.ResourceMemory,
-	}
-	pod, created, err := kube.EnsureSandboxPod(ctx, s.cfg.Kube, &body, spec)
+
+	pod, err := kube.SelectOrCreateControllerPod(ctx, s.cfg.Kube, s.ctrlSpec)
 	if err != nil {
-		s.jsonErr(w, http.StatusConflict, err.Error(), "sandbox")
+		s.jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("controller pod: %v", err), "controller_pod")
 		return
 	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
+	if pod.Status.PodIP == "" {
+		s.jsonErr(w, http.StatusServiceUnavailable, "controller pod not ready", "controller_not_ready")
+		return
 	}
-	resp := sandboxResponse(pod, s.cfg.WorkerPort)
-	s.writeJSON(w, status, resp)
+
+	scheme := "https"
+	if s.cfg.MTLSDisabled {
+		scheme = "http"
+	}
+	baseURL := fmt.Sprintf("%s://%s:%d", scheme, pod.Status.PodIP, s.ctrlSpec.Port)
+
+	req := CreateSandboxReq{
+		SandboxID:       body.SandboxID,
+		Env:             body.Env,
+		AllowedBinaries: body.AllowedBinaries,
+		VM:              body.VM,
+		Network:         body.Network,
+		Volumes:         body.Volumes,
+		Patches:         body.Patches,
+		TTLSeconds:      body.TTLSeconds,
+	}
+	if err := s.ctrlClient.CreateSandbox(ctx, baseURL, req); err != nil {
+		s.jsonErr(w, http.StatusBadGateway, fmt.Sprintf("create sandbox: %v", err), "create_sandbox")
+		return
+	}
+
+	route := kube.SandboxRoute{
+		ControllerPodName: pod.Name,
+		ControllerIP:      pod.Status.PodIP,
+		Port:              s.ctrlSpec.Port,
+	}
+	if err := s.store.Set(ctx, body.SandboxID, route); err != nil {
+		s.jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("store route: %v", err), "store")
+		return
+	}
+
+	_ = kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, 1)
+	_ = kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.TTLSeconds)
+
+	resp := &api.SandboxResponseBody{
+		SandboxID: body.SandboxID,
+		SessionID: body.SessionID,
+		Owner:     body.Owner,
+		Runtime:   "microsandbox",
+		Image:     body.Image,
+		PodRef:    api.PodRef{Namespace: pod.Namespace, Name: pod.Name, UID: string(pod.UID)},
+		Phase:     string(pod.Status.Phase),
+		Ready:     kube.PodRunningReady(pod),
+	}
+	s.writeJSON(w, http.StatusCreated, resp)
 }
 
+// handleSandboxGet returns the routing-store view of the sandbox. During the
+// migration to the controller-pod model this is best-effort: it confirms the
+// sandbox exists in our route store and points to its controller pod, but does
+// not query the controller for VM-level details (that lives in a later task).
 func (s *Server) handleSandboxGet(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sandboxId"))
 	if id == "" {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
 		return
 	}
-	ctx := r.Context()
-	pod, err := kube.GetSandboxByID(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, id)
+	route, ok, err := s.store.Get(r.Context(), id)
 	if err != nil {
-		if errors.IsNotFound(err) {
-			s.jsonErr(w, http.StatusNotFound, "not found", "")
-			return
-		}
 		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, sandboxResponse(pod, s.cfg.WorkerPort))
+	if !ok {
+		s.jsonErr(w, http.StatusNotFound, "not found", "")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, &api.SandboxResponseBody{
+		SandboxID: id,
+		Runtime:   "microsandbox",
+		PodRef:    api.PodRef{Namespace: s.cfg.SandboxNamespace, Name: route.ControllerPodName},
+	})
 }
 
 func (s *Server) handleSandboxDelete(w http.ResponseWriter, r *http.Request) {
@@ -389,51 +449,32 @@ func (s *Server) handleSandboxDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if err := kube.DeleteSandboxByID(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, id); err != nil {
-		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "")
+
+	route, ok, err := s.store.Get(ctx, id)
+	if err != nil {
+		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
-}
+	if !ok {
+		s.jsonErr(w, http.StatusNotFound, "sandbox not found", "")
+		return
+	}
 
-func sandboxResponse(pod *corev1.Pod, defaultPort int32) *api.SandboxResponseBody {
-	owner := ""
-	if pod.Labels != nil {
-		owner = pod.Labels[api.LabelOwner]
+	scheme := "https"
+	if s.cfg.MTLSDisabled {
+		scheme = "http"
 	}
-	sid := ""
-	session := ""
-	if pod.Labels != nil {
-		sid = pod.Labels[api.LabelSandboxID]
-		session = pod.Labels[api.LabelSessionID]
+	baseURL := fmt.Sprintf("%s://%s:%d", scheme, route.ControllerIP, route.Port)
+
+	if err := s.ctrlClient.DeleteSandbox(ctx, baseURL, DeleteSandboxReq{SandboxID: id}); err != nil {
+		s.jsonErr(w, http.StatusBadGateway, err.Error(), "delete_sandbox")
+		return
 	}
-	img := ""
-	if len(pod.Spec.Containers) > 0 {
-		img = pod.Spec.Containers[0].Image
-	}
-	wp := int(kube.WorkerListenPort(pod, defaultPort))
-	rt := api.SandboxRuntimeInstrumented
-	if pod.Labels != nil {
-		if v := pod.Labels[api.LabelWorkerRuntime]; v != "" {
-			rt = v
-		}
-	}
-	return &api.SandboxResponseBody{
-		SandboxID:   sid,
-		SessionID:   session,
-		Owner:       owner,
-		Runtime:     rt,
-		ExecAPIPath: api.WorkerExecAPIPath,
-		Image:       img,
-		WorkerPort:  wp,
-		PodRef: api.PodRef{
-			Namespace: pod.Namespace,
-			Name:      pod.Name,
-			UID:       string(pod.UID),
-		},
-		Phase: string(pod.Status.Phase),
-		Ready: kube.PodRunningReady(pod),
-	}
+
+	_ = s.store.Delete(ctx, id)
+	_ = kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, route.ControllerPodName, -1)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) StartReaper(ctx context.Context, wg *sync.WaitGroup) {
