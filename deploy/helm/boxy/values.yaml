@@ -27,3 +27,26 @@ reaperIntervalSeconds: 30
 
 workerServiceAccount: boxy-worker
 routerServiceAccount: boxy-router
+
+# --- Microsandbox controller (bin-packing model) ---
+controllerImage: boxy-controller:latest
+controllerPort: 8080
+maxSandboxesPerController: 20
+controllerTTLSeconds: 3600
+controllerServiceAccount: boxy-controller
+
+# mTLS between router and controller. Set mtlsDisabled: true for local dev.
+mtlsDisabled: false
+mtlsCACN: "boxy-ca"
+mtlsServerCN: "boxy-controller"
+mtlsClientCN: "boxy-router"
+
+# K8s NetworkPolicy applied to controller pods (default-deny egress).
+# Fine-grained per-sandbox network policy is enforced inside the VM by microsandbox.
+enableSandboxNetworkPolicy: true
+
+# VM operator defaults (env vars on the controller pod).
+vmLogLevel: "warn"             # off | error | warn | info | debug | trace
+vmMetricsIntervalMs: 0         # 0 = disabled
+vmPullPolicy: "if_missing"     # if_missing | always | never
+libkrunfwPath: ""              # empty = microsandbox default

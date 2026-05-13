@@ -1,0 +1,26 @@
+{{- if .Values.enableSandboxNetworkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: boxy-sandbox-default-deny
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      boxy.dev/managed-by: boxy
+      boxy.dev/controller: "true"
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow controller-to-router communication
+    - to:
+        - podSelector:
+            matchLabels:
+              app: boxy-router
+{{- end }}
