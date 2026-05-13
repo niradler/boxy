@@ -112,7 +112,7 @@ func (c *ControllerClient) DeleteSandbox(ctx context.Context, baseURL string, re
 	return c.deleteJSON(ctx, baseURL+"/v1/sandboxes", req)
 }
 
-func (c *ControllerClient) postJSON(ctx context.Context, url string, body, out interface{}) error {
+func (c *ControllerClient) postJSON(ctx context.Context, url string, body, out any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -136,7 +136,7 @@ func (c *ControllerClient) postJSON(ctx context.Context, url string, body, out i
 	return nil
 }
 
-func (c *ControllerClient) deleteJSON(ctx context.Context, url string, body interface{}) error {
+func (c *ControllerClient) deleteJSON(ctx context.Context, url string, body any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -157,10 +157,3 @@ func (c *ControllerClient) deleteJSON(ctx context.Context, url string, body inte
 	return nil
 }
 
-func controllerBaseURL(ip string, port int32) string {
-	return fmt.Sprintf("http://%s:%d", ip, port)
-}
-
-func controllerBaseURLTLS(ip string, port int32) string {
-	return fmt.Sprintf("https://%s:%d", ip, port)
-}
