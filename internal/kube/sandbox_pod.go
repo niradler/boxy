@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 
 	"boxy.dev/boxy/internal/api"
@@ -69,7 +70,13 @@ func EnsureSandboxPod(
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			got, gerr := c.CoreV1().Pods(spec.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
-			return got, false, gerr
+			if gerr != nil {
+				return nil, false, gerr
+			}
+			if cerr := assertExistingCompatible(got, body, spec); cerr != nil {
+				return nil, false, cerr
+			}
+			return got, false, nil
 		}
 		return nil, false, err
 	}
@@ -158,6 +165,17 @@ func buildSandboxPod(body *api.SandboxCreateBody, spec SandboxPodSpec) (*corev1.
 		Env:             mergeWorkerEnv(body, workerPort, spec.WorkerToken),
 		Resources:       desiredContainerResources(body, spec),
 		SecurityContext: workerSecurityContext(runAsNonRoot, runAsUser, runAsGroup, allowPrivilegeEscalation, fsReadOnly, dropAll),
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: intstr.FromInt32(workerPort),
+				},
+			},
+			InitialDelaySeconds: 1,
+			PeriodSeconds:       2,
+			FailureThreshold:    10,
+		},
 	}
 	podLabels := mergePodLabels(body, map[string]string{
 		api.LabelSandboxID:     body.SandboxID,
