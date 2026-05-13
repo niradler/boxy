@@ -1,0 +1,33 @@
+[package]
+name = "boxy-controller"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "boxy-controller"
+path = "src/main.rs"
+
+[lib]
+name = "boxy_controller"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["http2"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+microsandbox = "0.4"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", features = ["pem"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+dashmap = "6"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
