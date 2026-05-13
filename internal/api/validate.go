@@ -14,6 +14,7 @@ const (
 	LabelOwner         = "boxy.dev/owner"
 	LabelManagedBy     = "boxy.dev/managed-by"
 	LabelWorkerRuntime = "boxy.dev/worker-runtime"
+	LabelControllerPod = "boxy.dev/controller"
 
 	SandboxRuntimeInstrumented = "instrumented"
 	WorkerExecAPIPath          = "/v1/exec"
@@ -23,6 +24,8 @@ const (
 	AnnotationTTLSeconds       = "boxy.dev/ttl-seconds"
 	AnnotationExpiresAtRFC3339 = "boxy.dev/expires-at"
 	AnnotationProvisionedImage = "boxy.dev/provisioned-image"
+	AnnotationSandboxCount     = "boxy.dev/sandbox-count"
+	AnnotationControllerPort   = "boxy.dev/controller-port"
 )
 
 func PodRefEmpty(p *PodRef) bool {
