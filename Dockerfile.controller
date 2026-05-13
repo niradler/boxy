@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+
+# Stage 1: Build the Rust binary
+FROM rust:1.78-alpine AS builder
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev
+WORKDIR /build
+COPY controller/ .
+RUN cargo build --release --bin boxy-controller
+
+# Stage 2: Runtime image
+FROM alpine:3.20
+
+# CLIs that users can inject into VM sandboxes via allowedBinaries.
+# Each entry lives at /usr/local/bin/<name> so the controller can copy_file it into the VM.
+RUN apk add --no-cache \
+    bash \
+    curl \
+    ca-certificates \
+    aws-cli \
+    python3 \
+    py3-pip \
+    && ln -sf /usr/bin/aws /usr/local/bin/aws \
+    && ln -sf /usr/bin/curl /usr/local/bin/curl \
+    && ln -sf /bin/bash /usr/local/bin/bash \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python3
+
+COPY --from=builder /build/target/release/boxy-controller /usr/local/bin/boxy-controller
+
+# Controller needs root to access /dev/kvm. K8s SecurityContext drops capabilities.
+USER root
+
+ENTRYPOINT ["/usr/local/bin/boxy-controller"]
