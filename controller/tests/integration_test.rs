@@ -35,3 +35,31 @@ mod tests {
         assert!(!mgr.delete("sandbox-1")); // gone
     }
 }
+
+#[cfg(test)]
+mod tls_tests {
+    #[test]
+    fn test_mtls_disabled_skips_cert_load() {
+        std::env::set_var("BOXY_MTLS_DISABLED", "true");
+        let cfg = boxy_controller::config::Config::from_env();
+        assert!(cfg.mtls_disabled);
+        std::env::remove_var("BOXY_MTLS_DISABLED");
+    }
+}
+
+#[cfg(test)]
+mod handler_tests {
+    use axum::{body::Body, http::{Request, StatusCode}};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn test_healthz_returns_ok() {
+        let app = axum::Router::new()
+            .route("/healthz", axum::routing::get(boxy_controller::routes::healthz_handler));
+        let resp = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
