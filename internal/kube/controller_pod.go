@@ -27,12 +27,12 @@ type ControllerPodSpec struct {
 	ServiceAccount  string
 
 	// mTLS — when MTLSDisabled is false the pod mounts MTLSSecretName at /tls.
-	MTLSDisabled    bool
-	MTLSSecretName  string
-	VMLogLevel      string
-	VMMetricsIntMs  int
-	VMPullPolicy    string
-	LibKrunfwPath   string
+	MTLSDisabled   bool
+	MTLSSecretName string
+	VMLogLevel     string
+	VMMetricsIntMs int
+	VMPullPolicy   string
+	LibKrunfwPath  string
 
 	// KVMMode controls how the controller pod accesses /dev/kvm.
 	//   "device"   — request "devices.kubevirt.io/kvm: 1" (requires a KVM device plugin / KubeVirt installed)
@@ -175,8 +175,8 @@ func createControllerPod(ctx context.Context, c kubernetes.Interface, spec Contr
 						Limits: kvmResourceLimits(kvmMode),
 					},
 					SecurityContext: kvmSecurityContext(kvmMode, &runAsNonRoot, &allowPriv, &privileged, drop),
-					VolumeMounts: volumeMounts,
-					ReadinessProbe: controllerReadinessProbe(spec),
+					VolumeMounts:    volumeMounts,
+					ReadinessProbe:  controllerReadinessProbe(spec),
 				},
 			},
 		},
@@ -251,6 +251,29 @@ func RefreshControllerTTL(ctx context.Context, c kubernetes.Interface, ns, podNa
 	pod.Annotations[api.AnnotationExpiresAtRFC3339] = exp.Format(time.RFC3339)
 	_, err = c.CoreV1().Pods(ns).Update(ctx, pod, metav1.UpdateOptions{})
 	return err
+}
+
+// WaitForPodIP polls until the pod has an assigned IP or the timeout elapses.
+// Returns the updated pod on success.
+func WaitForPodIP(ctx context.Context, c kubernetes.Interface, ns, podName string, timeout time.Duration) (*corev1.Pod, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		pod, err := c.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		if pod.Status.PodIP != "" {
+			return pod, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for pod IP after %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // IncrementSandboxCount atomically bumps the sandbox-count annotation on a controller pod.

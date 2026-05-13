@@ -384,8 +384,16 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pod.Status.PodIP == "" {
-		s.jsonErr(w, http.StatusServiceUnavailable, "controller pod not ready", "controller_not_ready")
-		return
+		var waitErr error
+		pod, waitErr = kube.WaitForPodIP(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, 30*time.Second)
+		if waitErr != nil {
+			s.jsonErr(w, http.StatusServiceUnavailable, fmt.Sprintf("controller pod not ready: %v", waitErr), "controller_not_ready")
+			return
+		}
+	}
+
+	if err := kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.TTLSeconds); err != nil {
+		s.log.Warn("failed to refresh controller TTL before create", "pod", pod.Name, "err", err)
 	}
 
 	scheme := "https"
