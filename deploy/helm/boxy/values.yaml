@@ -1,4 +1,4 @@
-imageRouter: boxydev/boxy-router:dev
+imageRouter: boxy-router:e2e
 imageWorker: boxydev/boxy-worker:dev
 imagePullPolicy: IfNotPresent
 
@@ -29,7 +29,7 @@ workerServiceAccount: boxy-worker
 routerServiceAccount: boxy-router
 
 # --- Microsandbox controller (bin-packing model) ---
-controllerImage: boxy-controller:latest
+controllerImage: boxy-controller:e2e
 controllerPort: 8080
 maxSandboxesPerController: 20
 controllerTTLSeconds: 3600
@@ -50,3 +50,10 @@ vmLogLevel: "warn"             # off | error | warn | info | debug | trace
 vmMetricsIntervalMs: 0         # 0 = disabled
 vmPullPolicy: "if_missing"     # if_missing | always | never
 libkrunfwPath: ""              # empty = microsandbox default
+
+# How the controller pod accesses /dev/kvm.
+#   device   — request "devices.kubevirt.io/kvm: 1" (production: requires KubeVirt
+#              or a KVM device plugin installed on the cluster)
+#   hostpath — mount /dev/kvm via hostPath + run privileged (kind / clusters
+#              without a device plugin; requires PSA "privileged" on the namespace)
+kvmMode: "device"

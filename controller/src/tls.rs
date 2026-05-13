@@ -3,7 +3,7 @@ use rustls::{
     server::WebPkiClientVerifier,
     ServerConfig, RootCertStore,
 };
-use rustls_pemfile::{certs, pkcs8_private_keys};
+use rustls_pemfile::{certs, private_key};
 use std::{fs, io::BufReader, sync::Arc};
 
 use crate::config::Config;
@@ -30,15 +30,13 @@ pub async fn build_tls_config(cfg: &Config) -> RustlsConfig {
     let server_certs = certs(&mut BufReader::new(cert_pem.as_slice()))
         .collect::<Result<Vec<_>, _>>()
         .expect("parse server cert");
-    let mut key_reader = BufReader::new(key_pem.as_slice());
-    let key = pkcs8_private_keys(&mut key_reader)
-        .next()
-        .expect("at least one key")
-        .expect("parse private key");
+    let key = private_key(&mut BufReader::new(key_pem.as_slice()))
+        .expect("parse private key")
+        .expect("at least one private key in TLS secret");
 
     let server_cfg = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
-        .with_single_cert(server_certs, key.into())
+        .with_single_cert(server_certs, key)
         .expect("build TLS config");
 
     RustlsConfig::from_config(Arc::new(server_cfg))

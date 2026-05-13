@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CreateSandboxRequest {
     pub sandbox_id: String,
     pub env: Option<HashMap<String, String>>,
@@ -14,8 +14,10 @@ pub struct CreateSandboxRequest {
 }
 
 /// VM resource and runtime config (per-request overrides).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct VmConfig {
+    /// OCI image reference for the VM rootfs. Required.
+    pub image: Option<String>,
     pub memory_mb: Option<u32>,
     pub vcpus: Option<u8>,
     pub workdir: Option<String>,
@@ -28,7 +30,7 @@ pub struct VmConfig {
     pub scripts: Option<Vec<VmScript>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct VmRlimit {
     /// "nofile", "nproc", "memlock", "msgqueue", "sigpending", "nice", "rtprio", "rttime"
     pub resource: String,
@@ -36,13 +38,13 @@ pub struct VmRlimit {
     pub hard: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct VmScript {
     pub name: String,
     pub content: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NetworkConfig {
     pub enabled: Option<bool>,
     // Simple shortcuts
@@ -57,7 +59,7 @@ pub struct NetworkConfig {
     pub trust_host_cas: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NetworkRule {
     /// "egress", "ingress", or "any"
     pub direction: String,
@@ -73,13 +75,13 @@ pub struct NetworkRule {
     pub groups: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PortRange {
     pub start: u16,
     pub end: u16,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PortMapping {
     pub host_port: u16,
     pub guest_port: u16,
@@ -87,14 +89,14 @@ pub struct PortMapping {
     pub protocol: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DnsConfig {
     pub nameservers: Option<Vec<String>>,
     pub rebind_protection: Option<bool>,
     pub query_timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NetworkSecret {
     pub env_var: String,
     pub value: String,
@@ -103,7 +105,7 @@ pub struct NetworkSecret {
     pub allow_any_host_dangerous: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct VolumeMount {
     pub guest_path: String,
     /// "bind", "named", or "tmpfs"
@@ -114,7 +116,7 @@ pub struct VolumeMount {
     pub readonly: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SandboxPatch {
     /// "text", "bytes", "copy_file", "copy_dir", "symlink", "mkdir", "remove", "append"
     pub patch_type: String,
@@ -132,7 +134,7 @@ pub struct CreateSandboxResponse {
     pub sandbox_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExecRequest {
     pub sandbox_id: String,
     pub command: String,
@@ -149,7 +151,7 @@ pub struct ExecResponse {
     pub timed_out: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DeleteSandboxRequest {
     pub sandbox_id: String,
 }

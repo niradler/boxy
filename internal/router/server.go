@@ -52,9 +52,15 @@ type Config struct {
 	MaxSandboxesPerController int
 	ControllerServiceAcct     string
 	MTLSDisabled              bool
+	MTLSControllerSecret      string
 	TLSCAPath                 string
 	TLSClientCertPath         string
 	TLSClientKeyPath          string
+	VMLogLevel                string
+	VMMetricsIntMs            int
+	VMPullPolicy              string
+	LibKrunfwPath             string
+	KVMMode                   string
 }
 
 func envInt(key string, def int) int {
@@ -186,9 +192,15 @@ func ConfigFromEnv() (*Config, error) {
 		MaxSandboxesPerController: envInt("BOXY_MAX_SANDBOXES_PER_CONTROLLER", 20),
 		ControllerServiceAcct:     strings.TrimSpace(os.Getenv("BOXY_CONTROLLER_SERVICE_ACCOUNT")),
 		MTLSDisabled:              envBool("BOXY_MTLS_DISABLED", false),
+		MTLSControllerSecret:      envStr("BOXY_MTLS_CONTROLLER_SECRET", "boxy-mtls-controller"),
 		TLSCAPath:                 envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
 		TLSClientCertPath:         envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
 		TLSClientKeyPath:          envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
+		VMLogLevel:                envStr("BOXY_VM_LOG_LEVEL", ""),
+		VMMetricsIntMs:            envInt("BOXY_VM_METRICS_INTERVAL_MS", 0),
+		VMPullPolicy:              envStr("BOXY_VM_PULL_POLICY", ""),
+		LibKrunfwPath:             envStr("BOXY_LIBKRUNFW_PATH", ""),
+		KVMMode:                   envStr("BOXY_KVM_MODE", "device"),
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8080"
@@ -236,6 +248,13 @@ func NewServer(cfg Config) *Server {
 		TTLSeconds:      cfg.ControllerTTLSec,
 		PullSecretName:  cfg.PullSecret,
 		ServiceAccount:  cfg.ControllerServiceAcct,
+		MTLSDisabled:    cfg.MTLSDisabled,
+		MTLSSecretName:  cfg.MTLSControllerSecret,
+		VMLogLevel:      cfg.VMLogLevel,
+		VMMetricsIntMs:  cfg.VMMetricsIntMs,
+		VMPullPolicy:    cfg.VMPullPolicy,
+		LibKrunfwPath:   cfg.LibKrunfwPath,
+		KVMMode:         cfg.KVMMode,
 	}
 	return s
 }
@@ -494,10 +513,14 @@ func (s *Server) StartReaper(ctx context.Context, wg *sync.WaitGroup) {
 				n, err := session.ReapOnce(context.Background(), s.cfg.Kube, s.cfg.SandboxNamespace)
 				if err != nil {
 					s.log.Error("reaper", "err", err)
-					continue
+				} else if n > 0 {
+					s.log.Info("reaper deleted worker pods", "count", n)
 				}
-				if n > 0 {
-					s.log.Info("reaper deleted pods", "count", n)
+				m, err := kube.ReapControllerPods(context.Background(), s.cfg.Kube, s.cfg.SandboxNamespace)
+				if err != nil {
+					s.log.Error("controller reaper", "err", err)
+				} else if m > 0 {
+					s.log.Info("reaper deleted controller pods", "count", m)
 				}
 			}
 		}

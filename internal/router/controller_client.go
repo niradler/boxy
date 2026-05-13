@@ -51,10 +51,35 @@ func buildMTLSTransport(cfg ControllerClientConfig) http.RoundTripper {
 	if err != nil {
 		panic(fmt.Sprintf("load client keypair: %v", err))
 	}
+	// Controllers are dialed by ephemeral Pod IP — DNS/IP-based hostname
+	// verification cannot work. Instead we pin to our own CA and validate the
+	// chain ourselves. Peer identity is still proven by mTLS (the controller
+	// must present a cert signed by our CA).
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
-			RootCAs:      pool,
-			Certificates: []tls.Certificate{cert},
+			Certificates:       []tls.Certificate{cert},
+			InsecureSkipVerify: true,
+			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+				if len(rawCerts) == 0 {
+					return fmt.Errorf("no peer certificate presented")
+				}
+				peerCert, err := x509.ParseCertificate(rawCerts[0])
+				if err != nil {
+					return fmt.Errorf("parse peer cert: %w", err)
+				}
+				intermediates := x509.NewCertPool()
+				for _, raw := range rawCerts[1:] {
+					if c, err := x509.ParseCertificate(raw); err == nil {
+						intermediates.AddCert(c)
+					}
+				}
+				_, err = peerCert.Verify(x509.VerifyOptions{
+					Roots:         pool,
+					Intermediates: intermediates,
+					KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+				})
+				return err
+			},
 		},
 	}
 }

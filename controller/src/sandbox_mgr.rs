@@ -1,28 +1,26 @@
 use base64::{engine::general_purpose, Engine as _};
 use dashmap::DashMap;
 use microsandbox::{
-    network::{DnsConfig, NetworkPolicy, NetworkPolicyBuilder, NetworkSecret, PortMapping},
-    patch::PatchBuilder,
-    sandbox::{LogLevel, PullPolicy, Sandbox},
-    volume::VolumeMount,
+    sandbox::{PullPolicy, RlimitResource, Sandbox},
+    LogLevel, NetworkPolicy,
 };
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
-use tokio::time::timeout;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     config::Config,
     error::AppError,
-    types::{
-        CreateSandboxRequest, ExecResponse, NetworkConfig, NetworkRule, SandboxPatch, VolumeMount as ReqVolume,
-    },
+    types::{CreateSandboxRequest, ExecResponse, SandboxPatch, VolumeMount as ReqVolume},
 };
+
+/// Default rootfs image when the request does not specify one.
+const DEFAULT_IMAGE: &str = "ubuntu:24.04";
 
 /// Operator defaults applied to every sandbox.
 pub struct OperatorDefaults {
     pub log_level: LogLevel,
     pub pull_policy: PullPolicy,
     pub metrics_interval: Option<Duration>,
-    pub libkrunfw_path: Option<PathBuf>,
+    pub libkrunfw_path: Option<std::path::PathBuf>,
 }
 
 impl OperatorDefaults {
@@ -38,7 +36,7 @@ impl OperatorDefaults {
             libkrunfw_path: if cfg.libkrunfw_path.is_empty() {
                 None
             } else {
-                Some(PathBuf::from(&cfg.libkrunfw_path))
+                Some(std::path::PathBuf::from(&cfg.libkrunfw_path))
             },
         }
     }
@@ -64,35 +62,42 @@ impl SandboxManager {
             return Err(AppError::AlreadyExists(req.sandbox_id));
         }
 
+        let image = req
+            .vm
+            .as_ref()
+            .and_then(|v| v.image.clone())
+            .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
+
         let mut builder = Sandbox::builder(req.sandbox_id.clone())
+            .image(image)
             .log_level(self.defaults.log_level)
             .pull_policy(self.defaults.pull_policy);
 
         if let Some(path) = &self.defaults.libkrunfw_path {
             builder = builder.libkrunfw_path(path);
         }
-        match self.defaults.metrics_interval {
-            Some(d) => builder = builder.metrics_sample_interval(d),
-            None    => builder = builder.disable_metrics_sample(),
-        }
+        builder = match self.defaults.metrics_interval {
+            Some(d) => builder.metrics_sample_interval(d),
+            None => builder.disable_metrics_sample(),
+        };
 
-        // --- Per-request VM config ---
+        // Per-request VM config.
         if let Some(vm) = &req.vm {
-            if vm.memory_mb.unwrap_or(0) > 0 {
-                builder = builder.memory(vm.memory_mb.unwrap());
+            if let Some(mb) = vm.memory_mb.filter(|&v| v > 0) {
+                builder = builder.memory(mb);
             }
-            if vm.vcpus.unwrap_or(0) > 0 {
-                builder = builder.cpus(vm.vcpus.unwrap());
+            if let Some(c) = vm.vcpus.filter(|&v| v > 0) {
+                builder = builder.cpus(c);
             }
-            if let Some(w) = &vm.workdir   { builder = builder.workdir(w); }
-            if let Some(s) = &vm.shell     { builder = builder.shell(s); }
-            if let Some(h) = &vm.hostname  { builder = builder.hostname(h); }
-            if let Some(u) = &vm.user      { builder = builder.user(u); }
+            if let Some(w) = &vm.workdir  { builder = builder.workdir(w); }
+            if let Some(s) = &vm.shell    { builder = builder.shell(s); }
+            if let Some(h) = &vm.hostname { builder = builder.hostname(h); }
+            if let Some(u) = &vm.user     { builder = builder.user(u); }
             if let Some(d) = vm.max_duration_sec.filter(|&s| s > 0) {
-                builder = builder.max_duration(Duration::from_secs(d));
+                builder = builder.max_duration(d);
             }
             if let Some(d) = vm.idle_timeout_sec.filter(|&s| s > 0) {
-                builder = builder.idle_timeout(Duration::from_secs(d));
+                builder = builder.idle_timeout(d);
             }
             for rl in vm.rlimits.iter().flatten() {
                 builder = builder.rlimit_range(parse_rlimit(&rl.resource), rl.soft, rl.hard);
@@ -102,40 +107,73 @@ impl SandboxManager {
             }
         }
 
-        // --- Env vars ---
+        // Env vars.
         for (k, v) in req.env.iter().flatten() {
             builder = builder.env(k, v);
         }
 
-        // --- Network ---
-        if let Some(net) = &req.network {
-            builder = builder.network(|nb| apply_network(nb, net));
+        // Network — supports simple egress shortcuts. Advanced rules (CIDR,
+        // domains, per-rule actions) are not exposed via the controller API
+        // today; use the host-level Kubernetes NetworkPolicy for those.
+        if let Some(net) = req.network.clone() {
+            builder = builder.network(move |mut nb| {
+                if net.enabled == Some(false) {
+                    return nb.enabled(false);
+                }
+                if net.allow_internet_access == Some(true) {
+                    nb = nb.policy(NetworkPolicy::allow_all());
+                } else if let Some(domains) = net.allowed_egress_domains.as_ref() {
+                    if !domains.is_empty() {
+                        if let Ok(policy) = NetworkPolicy::none().allow_domains(domains.iter()) {
+                            nb = nb.policy(policy);
+                        }
+                    }
+                }
+                for p in net.ports.iter().flatten() {
+                    nb = match p.protocol.as_deref().unwrap_or("tcp") {
+                        "udp" => nb.port_udp(p.host_port, p.guest_port),
+                        _     => nb.port(p.host_port, p.guest_port),
+                    };
+                }
+                if let Some(mc) = net.max_connections.filter(|&v| v > 0) {
+                    nb = nb.max_connections(mc);
+                }
+                if net.trust_host_cas == Some(true) {
+                    nb = nb.trust_host_cas(true);
+                }
+                nb
+            });
         }
 
-        // --- Volumes ---
+        // Volumes.
         for v in req.volumes.iter().flatten() {
-            builder = builder.volume(&v.guest_path, |vb| apply_volume(vb, v));
+            let v_clone = v.clone();
+            let guest = v.guest_path.clone();
+            builder = builder.volume(guest, move |mb| apply_volume(mb, &v_clone));
         }
 
-        // --- Patches: allowed_binaries shorthand ---
-        let mut patch = PatchBuilder::new();
-        let mut has_patch = false;
-        for bin in req.allowed_binaries.iter().flatten() {
-            let src = format!("{}/{}", self.binaries_dir, bin);
-            let dst = format!("/usr/local/bin/{}", bin);
-            patch = patch.copy_file(&src, &dst, 0o755, false);
-            has_patch = true;
-        }
-        // --- Patches: explicit patch list ---
-        for p in req.patches.iter().flatten() {
-            patch = apply_patch(patch, p);
-            has_patch = true;
-        }
-        if has_patch {
-            builder = builder.patch(patch.build());
+        // Patches — allowed_binaries shorthand + explicit list.
+        let binaries_dir = self.binaries_dir.clone();
+        let allowed = req.allowed_binaries.clone().unwrap_or_default();
+        let patches = req.patches.clone().unwrap_or_default();
+        if !allowed.is_empty() || !patches.is_empty() {
+            builder = builder.patch(move |mut pb| {
+                for bin in &allowed {
+                    let src = format!("{}/{}", binaries_dir, bin);
+                    let dst = format!("/usr/local/bin/{}", bin);
+                    pb = pb.copy_file(src, dst, Some(0o755), false);
+                }
+                for p in &patches {
+                    pb = apply_patch(pb, p);
+                }
+                pb
+            });
         }
 
-        let sandbox = builder.build().await.map_err(|e| AppError::Vm(e.to_string()))?;
+        let sandbox = builder
+            .create()
+            .await
+            .map_err(|e| AppError::Vm(e.to_string()))?;
         self.sandboxes.insert(req.sandbox_id, sandbox);
         Ok(())
     }
@@ -151,39 +189,57 @@ impl SandboxManager {
         let sb = self
             .sandboxes
             .get(sandbox_id)
-            .ok_or_else(|| AppError::NotFound(sandbox_id.to_string()))?;
+            .ok_or_else(|| AppError::NotFound(sandbox_id.to_string()))?
+            .clone();
 
-        let mut cmd = sb.command(command);
-        for a in args {
-            cmd = cmd.arg(a);
-        }
-        for (k, v) in env.iter().flatten() {
-            cmd = cmd.env(k, v);
-        }
+        let args_vec: Vec<String> = args.to_vec();
+        let env_vec: Vec<(String, String)> = env.into_iter().flatten().collect();
 
-        match timeout(Duration::from_secs(timeout_secs), cmd.output()).await {
-            Ok(Ok(out)) => Ok(ExecResponse {
-                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-                exit_code: out.status.code().unwrap_or(-1),
+        let result = sb
+            .exec_with(command.to_string(), move |mut e| {
+                e = e.args(args_vec);
+                for (k, v) in env_vec {
+                    e = e.env(k, v);
+                }
+                if timeout_secs > 0 {
+                    e = e.timeout(Duration::from_secs(timeout_secs));
+                }
+                e
+            })
+            .await;
+
+        match result {
+            Ok(out) => Ok(ExecResponse {
+                stdout: out.stdout().unwrap_or_default(),
+                stderr: out.stderr().unwrap_or_default(),
+                exit_code: out.status().code,
                 timed_out: false,
             }),
-            Ok(Err(e)) => Err(AppError::Vm(e.to_string())),
-            Err(_) => Ok(ExecResponse {
-                stdout: String::new(),
-                stderr: "timed out".into(),
-                exit_code: -1,
-                timed_out: true,
-            }),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("ExecTimeout") || msg.to_lowercase().contains("timed out") {
+                    Ok(ExecResponse {
+                        stdout: String::new(),
+                        stderr: msg,
+                        exit_code: -1,
+                        timed_out: true,
+                    })
+                } else {
+                    Err(AppError::Vm(msg))
+                }
+            }
         }
     }
 
     pub async fn delete(&self, sandbox_id: &str) -> Result<(), AppError> {
-        let (_, mut sb) = self
+        let (_, sb) = self
             .sandboxes
             .remove(sandbox_id)
             .ok_or_else(|| AppError::NotFound(sandbox_id.to_string()))?;
-        sb.stop().await.map_err(|e| AppError::Vm(e.to_string()))?;
+        let _ = sb.stop().await;
+        sb.remove_persisted()
+            .await
+            .map_err(|e| AppError::Vm(e.to_string()))?;
         Ok(())
     }
 
@@ -194,145 +250,59 @@ impl SandboxManager {
 
 // --- helpers ---
 
-fn apply_network(mut nb: microsandbox::network::NetworkBuilder, net: &NetworkConfig) -> microsandbox::network::NetworkBuilder {
-    if net.enabled == Some(false) {
-        return nb.enabled(false);
-    }
-
-    // Simple shortcuts -- only used when Rules is empty
-    if net.rules.as_ref().map(|r| r.is_empty()).unwrap_or(true) {
-        if net.allow_internet_access == Some(true) {
-            nb = nb.policy(NetworkPolicy::allow_all());
-        } else if let Some(domains) = &net.allowed_egress_domains {
-            if !domains.is_empty() {
-                nb = nb.policy(NetworkPolicy::allow_domains(domains.clone()));
-            }
-        }
-    } else {
-        nb = nb.policy(build_policy(net.rules.as_ref().unwrap()));
-    }
-
-    for p in net.ports.iter().flatten() {
-        nb = match p.protocol.as_deref().unwrap_or("tcp") {
-            "udp" => nb.port_udp(p.host_port, p.guest_port),
-            _     => nb.port(p.host_port, p.guest_port),
-        };
-    }
-
-    if let Some(dns) = &net.dns {
-        nb = nb.dns(|db| {
-            let mut db = db;
-            if let Some(ns) = &dns.nameservers {
-                for s in ns { db = db.nameserver(s); }
-            }
-            if let Some(rp) = dns.rebind_protection {
-                db = db.rebind_protection(rp);
-            }
-            if let Some(ms) = dns.query_timeout_ms.filter(|&v| v > 0) {
-                db = db.query_timeout_ms(ms);
-            }
-            db
-        });
-    }
-
-    for s in net.secrets.iter().flatten() {
-        nb = nb.secret(|sb| {
-            let mut sb = sb.env(&s.env_var).value(&s.value);
-            for h in s.allowed_hosts.iter().flatten()          { sb = sb.allow_host(h); }
-            for p in s.allowed_host_patterns.iter().flatten()  { sb = sb.allow_host_pattern(p); }
-            if s.allow_any_host_dangerous == Some(true)        { sb = sb.allow_any_host_dangerous(true); }
-            sb
-        });
-    }
-
-    if let Some(mc) = net.max_connections.filter(|&v| v > 0) {
-        nb = nb.max_connections(mc);
-    }
-    if net.trust_host_cas == Some(true) {
-        nb = nb.trust_host_cas(true);
-    }
-    nb
-}
-
-fn build_policy(rules: &[NetworkRule]) -> NetworkPolicy {
-    let mut pb = NetworkPolicyBuilder::new().default_deny();
-    for r in rules {
-        pb = pb.rule(|rb| {
-            let mut rb = match r.direction.as_str() {
-                "ingress" => rb.ingress(),
-                "any"     => rb.any(),
-                _         => rb.egress(),
-            };
-            for p in r.protocols.iter().flatten() {
-                rb = match p.as_str() {
-                    "udp"    => rb.udp(),
-                    "icmpv4" => rb.icmpv4(),
-                    "icmpv6" => rb.icmpv6(),
-                    _        => rb.tcp(),
-                };
-            }
-            for p in r.ports.iter().flatten()           { rb = rb.port(*p); }
-            for pr in r.port_ranges.iter().flatten()    { rb = rb.port_range(pr.start, pr.end); }
-            for d in r.domains.iter().flatten()         { rb = rb.domain(d); }
-            for s in r.domain_suffixes.iter().flatten() { rb = rb.domain_suffix(s); }
-            for c in r.cidrs.iter().flatten()           { rb = rb.cidr(c); }
-            for g in r.groups.iter().flatten()          { rb = apply_group(rb, g); }
-            if r.action == "allow" { rb.allow() } else { rb.deny() }
-        });
-    }
-    pb.build()
-}
-
-fn apply_group(rb: microsandbox::network::RuleBuilder, group: &str) -> microsandbox::network::RuleBuilder {
-    match group {
-        "public"     => rb.allow_public(),    // will be overridden by action below
-        "private"    => rb.group(microsandbox::network::DestinationGroup::Private),
-        "loopback"   => rb.group(microsandbox::network::DestinationGroup::Loopback),
-        "link_local" => rb.group(microsandbox::network::DestinationGroup::LinkLocal),
-        "metadata"   => rb.group(microsandbox::network::DestinationGroup::Metadata),
-        "multicast"  => rb.group(microsandbox::network::DestinationGroup::Multicast),
-        "host"       => rb.group(microsandbox::network::DestinationGroup::Host),
-        _            => rb.group(microsandbox::network::DestinationGroup::Public),
-    }
-}
-
-fn apply_volume(vb: microsandbox::volume::VolumeBuilder, v: &ReqVolume) -> microsandbox::volume::VolumeBuilder {
+fn apply_volume(
+    mut mb: microsandbox::sandbox::MountBuilder,
+    v: &ReqVolume,
+) -> microsandbox::sandbox::MountBuilder {
     let readonly = v.readonly.unwrap_or(false);
-    let mut vb = match v.volume_type.as_str() {
-        "named" => vb.named(v.name.as_deref().unwrap_or("")),
+    mb = match v.volume_type.as_str() {
+        "named" => mb.named(v.name.clone().unwrap_or_default()),
         "tmpfs" => {
-            let mut b = vb.tmpfs();
+            let mut b = mb.tmpfs();
             if let Some(s) = v.size_mb.filter(|&s| s > 0) { b = b.size(s); }
             b
         }
-        _ => vb.bind(v.host_path.as_deref().unwrap_or("")),
+        _ => mb.bind(v.host_path.clone().unwrap_or_default()),
     };
-    if readonly { vb = vb.readonly(); }
-    vb
+    if readonly { mb = mb.readonly(); }
+    mb
 }
 
-fn apply_patch(mut pb: PatchBuilder, p: &SandboxPatch) -> PatchBuilder {
+fn apply_patch(
+    pb: microsandbox::sandbox::PatchBuilder,
+    p: &SandboxPatch,
+) -> microsandbox::sandbox::PatchBuilder {
     let replace = p.replace.unwrap_or(false);
-    let mode    = p.mode.unwrap_or(0o644);
+    let mode = p.mode;
     match p.patch_type.as_str() {
-        "text"      => pb.text(&p.path, p.content.as_deref().unwrap_or(""), mode, replace),
-        "bytes"     => {
-            let data = general_purpose::STANDARD.decode(p.bytes.as_deref().unwrap_or("")).unwrap_or_default();
+        "text" => pb.text(&p.path, p.content.clone().unwrap_or_default(), mode, replace),
+        "bytes" => {
+            let data = general_purpose::STANDARD
+                .decode(p.bytes.as_deref().unwrap_or(""))
+                .unwrap_or_default();
             pb.file(&p.path, data, mode, replace)
         }
-        "copy_file" => pb.copy_file(p.host_path.as_deref().unwrap_or(""), &p.path, mode, replace),
-        "copy_dir"  => pb.copy_dir(p.host_path.as_deref().unwrap_or(""), &p.path, replace),
-        "symlink"   => pb.symlink(p.target.as_deref().unwrap_or(""), &p.path, replace),
-        "mkdir"     => pb.mkdir(&p.path, mode),
-        "remove"    => pb.remove(&p.path),
-        "append"    => pb.append(&p.path, p.content.as_deref().unwrap_or("")),
-        _           => pb,
+        "copy_file" => pb.copy_file(
+            p.host_path.clone().unwrap_or_default(),
+            &p.path,
+            mode,
+            replace,
+        ),
+        "copy_dir" => pb.copy_dir(
+            p.host_path.clone().unwrap_or_default(),
+            &p.path,
+            replace,
+        ),
+        "symlink" => pb.symlink(p.target.clone().unwrap_or_default(), &p.path, replace),
+        "mkdir"   => pb.mkdir(&p.path, mode),
+        "remove"  => pb.remove(&p.path),
+        "append"  => pb.append(&p.path, p.content.clone().unwrap_or_default()),
+        _ => pb,
     }
 }
 
 fn parse_log_level(s: &str) -> LogLevel {
     match s {
-        "off"   => LogLevel::Off,
         "error" => LogLevel::Error,
         "info"  => LogLevel::Info,
         "debug" => LogLevel::Debug,
@@ -349,16 +319,19 @@ fn parse_pull_policy(s: &str) -> PullPolicy {
     }
 }
 
-fn parse_rlimit(s: &str) -> microsandbox::sandbox::RlimitResource {
-    use microsandbox::sandbox::RlimitResource::*;
+fn parse_rlimit(s: &str) -> RlimitResource {
     match s {
-        "nproc"      => Nproc,
-        "memlock"    => Memlock,
-        "msgqueue"   => Msgqueue,
-        "sigpending" => Sigpending,
-        "nice"       => Nice,
-        "rtprio"     => Rtprio,
-        "rttime"     => Rttime,
-        _            => Nofile,
+        "cpu"        => RlimitResource::Cpu,
+        "fsize"      => RlimitResource::Fsize,
+        "data"       => RlimitResource::Data,
+        "stack"      => RlimitResource::Stack,
+        "core"       => RlimitResource::Core,
+        "rss"        => RlimitResource::Rss,
+        "nproc"      => RlimitResource::Nproc,
+        "memlock"    => RlimitResource::Memlock,
+        "as"         => RlimitResource::As,
+        "locks"      => RlimitResource::Locks,
+        "sigpending" => RlimitResource::Sigpending,
+        _            => RlimitResource::Nofile,
     }
 }

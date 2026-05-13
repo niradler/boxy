@@ -1,32 +1,87 @@
 # syntax=docker/dockerfile:1.7
 
-# Stage 1: Build the Rust binary
-FROM rust:1.78-alpine AS builder
-RUN apk add --no-cache musl-dev pkgconfig openssl-dev
+# Stage 1: Build the Rust controller binary.
+# microsandbox depends on libkrun/libkrunfw which target glibc, so we build on
+# Ubuntu 24.04 — the same toolchain the upstream microsandbox release uses.
+FROM rust:1.95 AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev libcap-ng-dev libdbus-1-dev libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY controller/ .
 RUN cargo build --release --bin boxy-controller
 
-# Stage 2: Runtime image
-FROM alpine:3.20
+# Stage 2: Fetch the upstream microsandbox bundle (msb + libkrunfw).
+# Pinned to v0.4.5 to match the `microsandbox = "0.4.5"` SDK in Cargo.toml.
+FROM ubuntu:24.04 AS msb-fetch
+ARG MSB_VERSION=v0.4.5
+ARG TARGETARCH=amd64
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl tar \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp/msb
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) MSB_TARGET=linux-x86_64 ;; \
+        arm64) MSB_TARGET=linux-aarch64 ;; \
+        *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    BASE="https://github.com/superradcompany/microsandbox/releases/download/${MSB_VERSION}"; \
+    BUNDLE="microsandbox-${MSB_TARGET}.tar.gz"; \
+    curl -fsSL -o "${BUNDLE}" "${BASE}/${BUNDLE}"; \
+    curl -fsSL -o checksums.sha256 "${BASE}/checksums.sha256"; \
+    grep -F "${BUNDLE}" checksums.sha256 | sha256sum -c -; \
+    tar -xzf "${BUNDLE}"; \
+    ls -la
 
-# CLIs that users can inject into VM sandboxes via allowedBinaries.
-# Each entry lives at /usr/local/bin/<name> so the controller can copy_file it into the VM.
-RUN apk add --no-cache \
-    bash \
-    curl \
-    ca-certificates \
-    aws-cli \
-    python3 \
-    py3-pip \
-    && ln -sf /usr/bin/aws /usr/local/bin/aws \
+# Stage 3: Runtime image.
+# Ubuntu 24.04 (glibc 2.39) is required by the upstream msb binary.
+FROM ubuntu:24.04
+
+# CLIs that users can inject into VM sandboxes via allowedBinaries, plus
+# libraries needed by msb at runtime (libkrun pulls in dbus/cap-ng/sqlite).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        curl \
+        ca-certificates \
+        python3 \
+        python3-pip \
+        unzip \
+        libcap-ng0 \
+        libdbus-1-3 \
+        libsqlite3-0 \
+        libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws \
     && ln -sf /usr/bin/curl /usr/local/bin/curl \
-    && ln -sf /bin/bash /usr/local/bin/bash \
+    && ln -sf /usr/bin/bash /usr/local/bin/bash \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3
 
+# Install the microsandbox `msb` binary and libkrunfw so the SDK's
+# `Command::new("msb")` spawn path resolves at runtime. Layout mirrors the
+# upstream install.sh: /usr/local/bin/msb + /usr/local/lib/libkrunfw.so.*
+COPY --from=msb-fetch /tmp/msb/msb /usr/local/bin/msb
+COPY --from=msb-fetch /tmp/msb/libkrunfw.so.5.2.1 /usr/local/lib/libkrunfw.so.5.2.1
+RUN chmod 755 /usr/local/bin/msb \
+    && ln -sf libkrunfw.so.5.2.1 /usr/local/lib/libkrunfw.so.5 \
+    && ln -sf libkrunfw.so.5 /usr/local/lib/libkrunfw.so \
+    && ldconfig
+
+# Controller binary.
 COPY --from=builder /build/target/release/boxy-controller /usr/local/bin/boxy-controller
 
-# Controller needs root to access /dev/kvm. K8s SecurityContext drops capabilities.
+# Point the microsandbox SDK at our msb/libkrunfw locations. Without these,
+# resolve_msb_path / resolve_libkrunfw_path fall back to $HOME/.microsandbox
+# which doesn't exist in this image.
+ENV MSB_PATH=/usr/local/bin/msb \
+    BOXY_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so \
+    LD_LIBRARY_PATH=/usr/local/lib
+
+# Controller needs root to access /dev/kvm. K8s SecurityContext drops Linux
+# capabilities and isolates the pod.
 USER root
 
 ENTRYPOINT ["/usr/local/bin/boxy-controller"]

@@ -25,6 +25,20 @@ type ControllerPodSpec struct {
 	TTLSeconds      int
 	PullSecretName  string
 	ServiceAccount  string
+
+	// mTLS — when MTLSDisabled is false the pod mounts MTLSSecretName at /tls.
+	MTLSDisabled    bool
+	MTLSSecretName  string
+	VMLogLevel      string
+	VMMetricsIntMs  int
+	VMPullPolicy    string
+	LibKrunfwPath   string
+
+	// KVMMode controls how the controller pod accesses /dev/kvm.
+	//   "device"   — request "devices.kubevirt.io/kvm: 1" (requires a KVM device plugin / KubeVirt installed)
+	//   "hostpath" — bind-mount /dev/kvm via hostPath and run privileged (kind / clusters without a device plugin)
+	// Empty defaults to "device".
+	KVMMode string
 }
 
 func selectorController() labels.Set {
@@ -73,8 +87,65 @@ func createControllerPod(ctx context.Context, c kubernetes.Interface, spec Contr
 	expiresAt := now.Add(time.Duration(spec.TTLSeconds) * time.Second)
 
 	runAsNonRoot := false // controller runs as root to access /dev/kvm
-	allowPriv := false
+	kvmMode := spec.KVMMode
+	if kvmMode == "" {
+		kvmMode = "device"
+	}
+	privileged := kvmMode == "hostpath"
+	allowPriv := privileged
 	drop := corev1.Capability("ALL")
+
+	rustLog := "info"
+	if spec.VMLogLevel != "" {
+		rustLog = spec.VMLogLevel
+	}
+	env := []corev1.EnvVar{
+		{Name: "BOXY_CONTROLLER_PORT", Value: strconv.Itoa(int(spec.Port))},
+		{Name: "BOXY_MAX_SANDBOXES", Value: strconv.Itoa(spec.MaxSandboxes)},
+		{Name: "BOXY_MTLS_DISABLED", Value: strconv.FormatBool(spec.MTLSDisabled)},
+		{Name: "BOXY_TLS_CERT_PATH", Value: "/tls/tls.crt"},
+		{Name: "BOXY_TLS_KEY_PATH", Value: "/tls/tls.key"},
+		{Name: "BOXY_TLS_CA_PATH", Value: "/tls/ca.crt"},
+		{Name: "RUST_LOG", Value: rustLog},
+	}
+	if spec.VMLogLevel != "" {
+		env = append(env, corev1.EnvVar{Name: "BOXY_VM_LOG_LEVEL", Value: spec.VMLogLevel})
+	}
+	if spec.VMMetricsIntMs > 0 {
+		env = append(env, corev1.EnvVar{Name: "BOXY_VM_METRICS_INTERVAL_MS", Value: strconv.Itoa(spec.VMMetricsIntMs)})
+	}
+	if spec.VMPullPolicy != "" {
+		env = append(env, corev1.EnvVar{Name: "BOXY_VM_PULL_POLICY", Value: spec.VMPullPolicy})
+	}
+	if spec.LibKrunfwPath != "" {
+		env = append(env, corev1.EnvVar{Name: "BOXY_LIBKRUNFW_PATH", Value: spec.LibKrunfwPath})
+	}
+
+	var volumeMounts []corev1.VolumeMount
+	var volumes []corev1.Volume
+	if kvmMode == "hostpath" {
+		hpType := corev1.HostPathCharDev
+		volumes = append(volumes, corev1.Volume{
+			Name: "dev-kvm",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: "/dev/kvm", Type: &hpType},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "dev-kvm", MountPath: "/dev/kvm",
+		})
+	}
+	if !spec.MTLSDisabled && spec.MTLSSecretName != "" {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "tls", MountPath: "/tls", ReadOnly: true,
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "tls",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: spec.MTLSSecretName},
+			},
+		})
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -93,38 +164,19 @@ func createControllerPod(ctx context.Context, c kubernetes.Interface, spec Contr
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
+			Volumes:       volumes,
 			Containers: []corev1.Container{
 				{
 					Name:  "controller",
 					Image: spec.ControllerImage,
 					Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: spec.Port}},
-					Env: []corev1.EnvVar{
-						{Name: "BOXY_CONTROLLER_PORT", Value: strconv.Itoa(int(spec.Port))},
-						{Name: "BOXY_MAX_SANDBOXES", Value: strconv.Itoa(spec.MaxSandboxes)},
-					},
+					Env:   env,
 					Resources: corev1.ResourceRequirements{
-						Limits: corev1.ResourceList{
-							"devices.kubevirt.io/kvm": resource.MustParse("1"),
-						},
+						Limits: kvmResourceLimits(kvmMode),
 					},
-					SecurityContext: &corev1.SecurityContext{
-						AllowPrivilegeEscalation: &allowPriv,
-						RunAsNonRoot:             &runAsNonRoot,
-						Capabilities: &corev1.Capabilities{
-							Drop: []corev1.Capability{drop},
-						},
-					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/healthz",
-								Port: intstr.FromInt32(spec.Port),
-							},
-						},
-						InitialDelaySeconds: 2,
-						PeriodSeconds:       3,
-						FailureThreshold:    15,
-					},
+					SecurityContext: kvmSecurityContext(kvmMode, &runAsNonRoot, &allowPriv, &privileged, drop),
+					VolumeMounts: volumeMounts,
+					ReadinessProbe: controllerReadinessProbe(spec),
 				},
 			},
 		},
@@ -148,6 +200,43 @@ func createControllerPod(ctx context.Context, c kubernetes.Interface, spec Contr
 	return created, nil
 }
 
+// ReapControllerPods deletes controller pods whose expires-at annotation has passed.
+// Returns the number of pods deleted.
+func ReapControllerPods(ctx context.Context, c kubernetes.Interface, ns string) (int, error) {
+	sel := labels.SelectorFromSet(selectorController())
+	list, err := c.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel.String()})
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	deleted := 0
+	for i := range list.Items {
+		p := &list.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		exp := p.Annotations[api.AnnotationExpiresAtRFC3339]
+		if exp == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, exp)
+		if err != nil {
+			continue
+		}
+		if !now.After(t) {
+			continue
+		}
+		if err := c.CoreV1().Pods(ns).Delete(ctx, p.Name, metav1.DeleteOptions{}); err != nil {
+			if !errors.IsNotFound(err) {
+				return deleted, err
+			}
+			continue
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
 // RefreshControllerTTL extends the controller pod's expiry annotation.
 // Call this on every operation that touches the controller so it stays alive.
 func RefreshControllerTTL(ctx context.Context, c kubernetes.Interface, ns, podName string, ttlSeconds int) error {
@@ -165,20 +254,83 @@ func RefreshControllerTTL(ctx context.Context, c kubernetes.Interface, ns, podNa
 }
 
 // IncrementSandboxCount atomically bumps the sandbox-count annotation on a controller pod.
+// Uses optimistic concurrency: retries on ResourceVersion conflict so two concurrent
+// callers don't lose updates and oversubscribe a controller's MaxSandboxes budget.
 func IncrementSandboxCount(ctx context.Context, c kubernetes.Interface, ns, podName string, delta int) error {
-	pod, err := c.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return err
+	const maxRetries = 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		pod, err := c.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		n, _ := strconv.Atoi(pod.Annotations[api.AnnotationSandboxCount])
+		n += delta
+		if n < 0 {
+			n = 0
+		}
+		pod.Annotations[api.AnnotationSandboxCount] = strconv.Itoa(n)
+		_, err = c.CoreV1().Pods(ns).Update(ctx, pod, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if !errors.IsConflict(err) {
+			return err
+		}
 	}
-	if pod.Annotations == nil {
-		pod.Annotations = map[string]string{}
+	return fmt.Errorf("sandbox count update conflict after %d retries", maxRetries)
+}
+
+// kvmResourceLimits returns container resource limits based on KVM access mode.
+// In "device" mode (production with a KVM device plugin installed) the controller
+// requests one "devices.kubevirt.io/kvm" unit so kubelet wires /dev/kvm with the
+// right cgroup. In "hostpath" mode access is via a hostPath volume + privileged
+// container, so no special resource is required.
+func kvmResourceLimits(mode string) corev1.ResourceList {
+	if mode == "hostpath" {
+		return nil
 	}
-	n, _ := strconv.Atoi(pod.Annotations[api.AnnotationSandboxCount])
-	n += delta
-	if n < 0 {
-		n = 0
+	return corev1.ResourceList{
+		"devices.kubevirt.io/kvm": resource.MustParse("1"),
 	}
-	pod.Annotations[api.AnnotationSandboxCount] = strconv.Itoa(n)
-	_, err = c.CoreV1().Pods(ns).Update(ctx, pod, metav1.UpdateOptions{})
-	return err
+}
+
+func kvmSecurityContext(mode string, runAsNonRoot, allowPriv, privileged *bool, drop corev1.Capability) *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: allowPriv,
+		RunAsNonRoot:             runAsNonRoot,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{drop}},
+	}
+	if mode == "hostpath" {
+		sc.Privileged = privileged
+	}
+	return sc
+}
+
+// controllerReadinessProbe returns an HTTP probe when mTLS is off, and a TCP
+// socket probe when mTLS is on — k8s probes can't present client certs.
+func controllerReadinessProbe(spec ControllerPodSpec) *corev1.Probe {
+	base := corev1.Probe{
+		InitialDelaySeconds: 2,
+		PeriodSeconds:       3,
+		FailureThreshold:    15,
+	}
+	if spec.MTLSDisabled {
+		base.ProbeHandler = corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path:   "/healthz",
+				Port:   intstr.FromInt32(spec.Port),
+				Scheme: corev1.URISchemeHTTP,
+			},
+		}
+	} else {
+		base.ProbeHandler = corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromInt32(spec.Port),
+			},
+		}
+	}
+	return &base
 }
