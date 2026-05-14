@@ -29,7 +29,7 @@ kubectl cluster-info --context "${CTX}"
 #     /dev/kvm inside its Linux VM, so the same check applies here)
 #
 # If /dev/kvm is not present inside the kind node:
-#   - kvmMode=none is used (controller starts but sandbox create/exec fail)
+#   - the api and operator suites are skipped automatically
 #   - api and operator suites are skipped automatically
 #   - infra, security, and config suites still run
 # -----------------------------------------------------------------------
@@ -41,19 +41,16 @@ if [[ -n "${KIND_NODE}" ]] && docker exec "${KIND_NODE}" test -c /dev/kvm 2>/dev
 fi
 
 if [[ "${KVM_AVAILABLE}" == "true" ]]; then
-  KVM_MODE="hostpath"
-  echo ">>> /dev/kvm found inside kind node '${KIND_NODE}' — sandbox suites enabled (kvmMode=hostpath)"
+  echo ">>> /dev/kvm found inside kind node '${KIND_NODE}' — all suites will run"
 else
-  KVM_MODE="none"
-  # Append api,operator to any caller-supplied SKIP_SUITES.
   SKIP_SUITES="${SKIP_SUITES:+${SKIP_SUITES},}api,operator"
   echo ""
   echo ">>> WARNING: /dev/kvm not available inside kind node"
   echo ">>>   microsandbox requires KVM (Linux) or Apple Hypervisor Framework (macOS Apple Silicon)"
   echo ">>>   — no process-isolation fallback exists in microsandbox v0.4"
   echo ">>>   Skipping api and operator suites; infra/security/config will still run."
-  echo ">>>   To run all suites, use a Linux host with KVM enabled, or macOS with Apple Silicon"
-  echo ">>>   and Docker Desktop (which exposes /dev/kvm inside containers)."
+  echo ">>>   To run all suites, use a Linux host with KVM enabled, or macOS Apple Silicon"
+  echo ">>>   with Docker Desktop (which exposes /dev/kvm inside containers)."
   echo ""
 fi
 
@@ -80,7 +77,7 @@ ROUTER_TOKEN="$(openssl rand -hex 16)"
 echo ">>> Installing CRD"
 kubectl --context "${CTX}" apply -f deploy/helm/boxy/crds/sandbox-crd.yaml
 
-echo ">>> Installing Helm chart (kvmMode=${KVM_MODE})"
+echo ">>> Installing Helm chart"
 helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   -n "${NAMESPACE}" --create-namespace \
   --set "imageRouter=${IMAGE_REPO}/boxy-router:${TAG}" \
@@ -90,7 +87,6 @@ helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   --set controllerReplicas=1 \
   --set "routerToken=${ROUTER_TOKEN}" \
   --set mtlsDisabled=true \
-  --set "kvmMode=${KVM_MODE}" \
   --set defaultSandbox.enabled=false \
   --kube-context "${CTX}"
 

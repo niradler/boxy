@@ -1,6 +1,3 @@
-{{- if not (has .Values.kvmMode (list "device" "hostpath")) }}
-  {{- fail "kvmMode must be 'device' or 'hostpath' — microsandbox requires KVM access, there is no no-KVM fallback" }}
-{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -63,25 +60,14 @@ spec:
             - name: BOXY_LIBKRUNFW_PATH
               value: {{ .Values.libkrunfwPath | quote }}
             {{- end }}
-          {{- if eq .Values.kvmMode "device" }}
-          resources:
-            limits:
-              devices.kubevirt.io/kvm: "1"
-            {{- with .Values.resourcesController }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
-          {{- else }}
           {{- with .Values.resourcesController }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- end }}
           securityContext:
             runAsNonRoot: false
-            allowPrivilegeEscalation: {{ eq .Values.kvmMode "hostpath" }}
-            {{- if eq .Values.kvmMode "hostpath" }}
+            allowPrivilegeEscalation: true
             privileged: true
-            {{- end }}
             capabilities:
               drop: ["ALL"]
           {{- if .Values.mtlsDisabled }}
@@ -116,22 +102,18 @@ spec:
             failureThreshold: 6
           {{- end }}
           volumeMounts:
-            {{- if eq .Values.kvmMode "hostpath" }}
             - name: dev-kvm
               mountPath: /dev/kvm
-            {{- end }}
             {{- if not .Values.mtlsDisabled }}
             - name: tls
               mountPath: /tls
               readOnly: true
             {{- end }}
       volumes:
-        {{- if eq .Values.kvmMode "hostpath" }}
         - name: dev-kvm
           hostPath:
             path: /dev/kvm
             type: CharDevice
-        {{- end }}
         {{- if not .Values.mtlsDisabled }}
         - name: tls
           secret:

@@ -169,7 +169,6 @@ Deletes the sandbox VM on its controller and removes the route.
 | `BOXY_CONTROLLER_TTL_SECONDS` | `3600` | Auto-refreshed on each operation. |
 | `BOXY_MAX_SANDBOXES_PER_CONTROLLER` | `20` | VMs per controller pod. |
 | `BOXY_CONTROLLER_SERVICE_ACCOUNT` | `""` | |
-| `BOXY_KVM_MODE` | `device` | `device` (production, requires KVM device plugin) or `hostpath` (kind/dev, privileged). |
 
 ### mTLS
 
@@ -243,7 +242,7 @@ helm upgrade --install boxy ./deploy/helm/boxy -n boxy --create-namespace \
   --set routerToken="$(openssl rand -hex 16)"
 ```
 
-Set `sandboxNamespace` when sandboxes should live outside the release namespace. Set `kvmMode: hostpath` for kind clusters without a KVM device plugin.
+Set `sandboxNamespace` when sandboxes should live outside the release namespace. Cluster nodes must have `/dev/kvm` available — the controller mounts it via hostPath automatically.
 
 ## KVM requirements
 
@@ -255,12 +254,7 @@ microsandbox (the VM engine used by boxy-controller) requires hardware-assisted 
 | macOS Apple Silicon | Apple Hypervisor Framework — Docker Desktop on M-series Macs exposes `/dev/kvm` inside containers automatically |
 | x86 cloud VMs | Nested virtualization must be enabled on the host hypervisor (AWS: metal instances or `--cpu-options AmdSevSnp=enabled`; GCP: enable nested virt on the instance; Azure: `Standard_D*v5` or `E*v5` VMs) |
 
-**Set `kvmMode` in Helm values** — controls how the controller pod gets `/dev/kvm`, not whether it needs it:
-
-| Mode | When to use |
-| ---- | ----------- |
-| `device` (default) | Production; requires KubeVirt or a KVM device plugin on cluster nodes |
-| `hostpath` | kind clusters and bare-metal without a device plugin; needs privileged namespace |
+The controller pod always mounts `/dev/kvm` via hostPath and runs privileged. Your cluster nodes must have `/dev/kvm` available.
 
 The e2e scripts detect `/dev/kvm` inside kind nodes automatically. When KVM is unavailable the `api` and `operator` suites are skipped with a clear message rather than hanging.
 

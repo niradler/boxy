@@ -17,7 +17,7 @@ if [[ "${BOXY_NO_KVM:-false}" == "true" ]]; then
   skip "All operator sandbox tests require /dev/kvm — microsandbox v0.4 has no no-KVM fallback"
   echo ""
   echo "  Requirements: Linux with KVM enabled, or macOS Apple Silicon with Docker Desktop."
-  echo "  Set kvmMode=hostpath (kind) or kvmMode=device (production) in Helm values."
+  echo "  Cluster nodes must have /dev/kvm available (Linux KVM or macOS Apple Silicon + Docker Desktop)."
   summary
   exit 0
 fi
