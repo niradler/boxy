@@ -3,8 +3,16 @@ imagePullPolicy: IfNotPresent
 
 sandboxNamespace: ""
 
-routerReplicas: 2
+routerReplicas: 1
 routerServicePort: 8080
+
+# --- Router autoscaling (HPA) ---
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  # targetMemoryUtilizationPercentage: 80
 
 routerToken: "changeme-router"
 

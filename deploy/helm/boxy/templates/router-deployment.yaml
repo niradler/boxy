@@ -4,7 +4,9 @@ metadata:
   name: {{ include "boxy.fullname" . }}-router
   namespace: {{ .Release.Namespace }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.routerReplicas }}
+  {{- end }}
   selector:
     matchLabels:
       app: boxy-router
