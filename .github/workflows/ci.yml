@@ -5,12 +5,20 @@ on:
   pull_request:
     branches: [main, master]
 jobs:
-  test:
+  test-go:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22.0"
+          go-version: "1.26.0"
       - run: go vet ./...
       - run: go test ./...
+
+  test-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+        working-directory: controller

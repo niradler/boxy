@@ -28,8 +28,6 @@ SB_ID=$(unique_id)
 
 create_resp=$(curl_api POST "/v1/sandboxes" \
   -d "{\"sessionId\":\"e2e-sess\",\"sandboxId\":\"${SB_ID}\",\"owner\":\"e2e-test\",\"ttlSeconds\":600}")
-create_status=$(curl_api_status POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"e2e-sess\",\"sandboxId\":\"${SB_ID}-dup\",\"owner\":\"e2e-test\",\"ttlSeconds\":600}")
 
 create_sandbox_id=$(echo "${create_resp}" | jq -r '.sandboxId // empty')
 if [[ "${create_sandbox_id}" == "${SB_ID}" ]]; then
@@ -144,9 +142,6 @@ assert_http_status "DELETE sandbox returns 204" "204" "${del_status}"
 
 del_again=$(curl_api_status DELETE "/v1/sandboxes/${SB_ID}")
 assert_http_status "DELETE already-deleted sandbox returns 404" "404" "${del_again}"
-
-# Clean up the dup sandbox too
-curl_api DELETE "/v1/sandboxes/${SB_ID}-dup" > /dev/null 2>&1 || true
 
 # -----------------------------------------------------------------------
 # MCP Protocol

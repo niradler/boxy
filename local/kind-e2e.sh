@@ -15,7 +15,7 @@ RELEASE_NAME="${RELEASE_NAME:-boxy}"
 
 if ! kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   echo ">>> Creating kind cluster: ${CLUSTER_NAME}"
-  kind create cluster --name "${CLUSTER_NAME}"
+  kind create cluster --name "${CLUSTER_NAME}" --config test/e2e/kind-config.yaml
 fi
 
 kubectl cluster-info --context "${CTX}"

@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn build_unknown_returns_err() {
-        let err = build_adapter(&test_cfg("unknown")).unwrap_err();
+        let err = build_adapter(&test_cfg("unknown")).err().unwrap();
         assert!(err.to_string().contains("unknown sandbox provider"));
         assert!(err.to_string().contains("unknown"));
     }
