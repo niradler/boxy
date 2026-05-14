@@ -1,22 +1,21 @@
 # boxy
 
-`boxy` is a Kubernetes-native sandbox manager that runs isolated workloads inside lightweight **microsandbox KVM VMs**. A stateless Go **router** bin-packs sandboxes across dynamically created **controller pods** (Rust), each hosting multiple VMs via [microsandbox](https://github.com/nicholasgasior/microsandbox). Commands are executed inside VMs through `POST /v1/exec`.
+`boxy` is a Kubernetes-native sandbox manager that runs isolated workloads inside lightweight **microsandbox KVM VMs**. A stateless Go **router** bin-packs sandboxes across dynamically created **controller pods** (Rust), each hosting multiple VMs via [microsandbox](https://github.com/nicholasgasior/microsandbox). Commands are executed inside VMs through `POST /v1/exec` or the built-in **MCP server** (`POST /mcp`).
 
 ## Architecture
 
 | Layer | Language | Responsibility |
 |-------|----------|----------------|
-| **boxy-router** | Go | Authenticated HTTP API; bin-packs sandboxes across controller pods; maintains a ConfigMap-backed routing store; self-healing sync reconciler; TTL reaper for both controller and worker pods. |
+| **boxy-router** | Go | Authenticated HTTP API + MCP server; bin-packs sandboxes across controller pods; maintains a ConfigMap-backed routing store; self-healing sync reconciler; TTL reaper for controller pods. |
 | **boxy-controller** | Rust | Runs on a Kubernetes pod with `/dev/kvm` access; manages microsandbox VM lifecycle (create/exec/delete); exposes HTTP API over mTLS; each controller hosts up to `BOXY_MAX_SANDBOXES_PER_CONTROLLER` VMs. |
-| **boxy-worker** | Go | Container image with common CLIs; used for the simpler pod-based execution mode (`api_exec`/`pod_exec`) without VMs. |
 
 **How it works:**
 
 1. Client calls `POST /v1/sandboxes` on the router.
 2. Router picks (or creates) a controller pod with available capacity (bin-packing).
 3. Router tells the controller to create a microsandbox VM.
-4. Router stores the route (`sandboxId` -> controller pod IP) in a ConfigMap.
-5. `POST /v1/exec` looks up the route, dials the controller over mTLS, executes inside the VM.
+4. Router stores the route (`sandboxId` → controller pod IP) in a ConfigMap.
+5. `POST /v1/exec` (or `POST /mcp` tools/call) looks up the route, dials the controller over mTLS, executes inside the VM.
 
 **Self-healing:** A sync reconciler periodically fans out to all controller pods (`GET /v1/sandboxes`), rebuilds the routing store from ground truth, and invalidates stale routes. Triggered on startup, cache conflicts, parse errors, or stale-route detection during exec.
 
@@ -113,6 +112,27 @@ Status for the sandbox (from the routing store).
 
 Deletes the sandbox VM on its controller and removes the route.
 
+### `POST /mcp`
+
+[Model Context Protocol](https://modelcontextprotocol.io/) endpoint using Streamable HTTP transport (JSON-RPC 2.0). Built with the [official Go SDK](https://github.com/modelcontextprotocol/go-sdk) (`v1.6.0`). Stateless — no session management required.
+
+**Headers:**
+
+| Header | Notes |
+|--------|-------|
+| `Authorization` | `Bearer <BOXY_ROUTER_TOKEN>` (required). |
+| `Content-Type` | `application/json` |
+| `Accept` | `application/json, text/event-stream` (required by the SDK). |
+| `X-Sandbox-Id` | Target a specific sandbox. If omitted, uses the default sandbox (when enabled). |
+
+**Available tools:**
+
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute a shell command. Params: `command` (string, required), `timeoutSeconds` (int, default 60). |
+
+**Default sandbox:** When `BOXY_DEFAULT_SANDBOX_ENABLED=true`, MCP clients can call `bash` without specifying `X-Sandbox-Id`. The router creates and manages a long-lived default sandbox automatically.
+
 ## Security model
 
 - **Router auth:** `Authorization: Bearer <BOXY_ROUTER_TOKEN>` on every route.
@@ -130,9 +150,7 @@ Deletes the sandbox VM on its controller and removes the route.
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `BOXY_ROUTER_TOKEN` | — | Required. Bearer token for clients. |
-| `BOXY_WORKER_TOKEN` | — | Required. Shared secret for worker pods (legacy mode). |
 | `BOXY_SANDBOX_NAMESPACE` | `default` | Namespace for controller and sandbox pods. |
-| `BOXY_WORKER_IMAGE` | — | Required. Image for worker pods (legacy mode). |
 | `BOXY_LISTEN_ADDR` | `:8080` | |
 | `BOXY_MAX_BODY_BYTES` | `1048576` | |
 | `BOXY_MAX_OUTPUT_BYTES` | `2097152` | |
@@ -162,6 +180,13 @@ Deletes the sandbox VM on its controller and removes the route.
 | `BOXY_TLS_CLIENT_CERT_PATH` | `/tls/tls.crt` | |
 | `BOXY_TLS_CLIENT_KEY_PATH` | `/tls/tls.key` | |
 | `BOXY_MTLS_CONTROLLER_SECRET` | `boxy-mtls-controller` | K8s Secret mounted into controller pods. |
+
+### Default sandbox (MCP)
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BOXY_DEFAULT_SANDBOX_ENABLED` | `false` | Enable the default sandbox for MCP clients. |
+| `BOXY_DEFAULT_SANDBOX_CONFIG` | — | Required when enabled. JSON string with sandbox create body (sandboxId, owner, ttlSeconds, vm, network, etc.). |
 
 ### VM operator defaults
 
@@ -195,7 +220,7 @@ make test
 make lint
 ```
 
-Requires Go 1.22+ and Rust 1.95+ (for the controller).
+Requires Go 1.25+ and Rust 1.95+ (for the controller).
 
 ## Build images
 
@@ -203,7 +228,7 @@ Requires Go 1.22+ and Rust 1.95+ (for the controller).
 make docker-build IMAGE_REPO=your.registry/boxy TAG=dev
 ```
 
-This builds the router and worker images. The controller image is built separately:
+This builds the router image. The controller image is built separately:
 
 ```bash
 docker build -f Dockerfile.controller -t your.registry/boxy/boxy-controller:dev .
@@ -214,10 +239,8 @@ docker build -f Dockerfile.controller -t your.registry/boxy/boxy-controller:dev 
 ```bash
 helm upgrade --install boxy ./deploy/helm/boxy -n boxy --create-namespace \
   --set imageRouter=your.registry/boxy/boxy-router:dev \
-  --set imageWorker=your.registry/boxy/boxy-worker:dev \
   --set controllerImage=your.registry/boxy/boxy-controller:dev \
-  --set routerToken="$(openssl rand -hex 16)" \
-  --set workerToken="$(openssl rand -hex 32)"
+  --set routerToken="$(openssl rand -hex 16)"
 ```
 
 Set `sandboxNamespace` when sandboxes should live outside the release namespace. Set `kvmMode: hostpath` for kind clusters without a KVM device plugin.
@@ -260,6 +283,28 @@ JSON
 # Delete a sandbox
 curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:8080/v1/sandboxes/demo-1
+
+# MCP: initialize
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"cli","version":"1.0"},"capabilities":{}}}' \
+  http://127.0.0.1:8080/mcp | jq .
+
+# MCP: list tools
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  http://127.0.0.1:8080/mcp | jq .
+
+# MCP: execute bash (with explicit sandbox)
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'X-Sandbox-Id: demo-1' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo hello"}}}' \
+  http://127.0.0.1:8080/mcp | jq .
 ```
 
 ## API status codes
@@ -277,15 +322,13 @@ curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
 
 ```
 cmd/boxy-router/       # Router entry point (Go)
-cmd/boxy-worker/       # Worker entry point (Go)
 controller/            # Microsandbox controller (Rust)
   src/                 #   Axum HTTP server, sandbox manager, mTLS
   tests/
 internal/
   api/                 # Shared types + validation
-  exec/                # api_exec/pod_exec clients, shell helpers
   kube/                # K8s helpers: route store, controller pod lifecycle, pod validation
-  router/              # HTTP server, mTLS client, sync reconciler
+  router/              # HTTP server, MCP server, mTLS client, sync reconciler, default sandbox
   session/             # TTL / reaper logic
 deploy/
   helm/boxy/           # Helm chart (router, controller RBAC, mTLS secrets, NetworkPolicy)
@@ -293,7 +336,6 @@ deploy/
 test/e2e/              # Go E2E tests
 Dockerfile.router
 Dockerfile.controller
-Dockerfile.worker
 ```
 
 ## License

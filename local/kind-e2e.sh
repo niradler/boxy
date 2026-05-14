@@ -26,7 +26,8 @@ helm upgrade --install boxy ./deploy/helm/boxy -n boxy --create-namespace \
   --set "routerToken=${ROUTER_TOKEN}" \
   --set reaperIntervalSeconds=5 \
   --set mtlsDisabled=true \
-  --set kvmMode=hostpath
+  --set kvmMode=hostpath \
+  --set defaultSandbox.enabled=true
 
 kubectl --context "${CTX}" rollout status deployment/boxy-router -n boxy --timeout=180s
 kubectl --context "${CTX}" wait -n boxy --for=condition=Ready pods -l app=boxy-router --timeout=180s
@@ -34,9 +35,12 @@ kubectl --context "${CTX}" wait -n boxy --for=condition=Ready pods -l app=boxy-r
 kubectl --context "${CTX}" -n boxy port-forward svc/boxy-router 18080:8080 &
 PF=$!
 trap 'kill ${PF} 2>/dev/null || true' EXIT
-sleep 2
 
 BASE="http://127.0.0.1:18080"
+for i in $(seq 1 15); do
+  curl -fsS "${BASE}/healthz" 2>/dev/null | grep -q ok && break
+  sleep 2
+done
 curl -fsS "${BASE}/healthz" | grep ok
 
 CREATE="$(curl -fsS "${BASE}/v1/sandboxes" \
@@ -56,6 +60,45 @@ curl -fsS "${BASE}/v1/exec" \
   -d '{"sessionId":"s1","sandboxId":"sb1","command":"sh","args":["-c","echo world"],"timeoutSeconds":60}' | jq -e '.stdout | test("world")'
 
 curl -sS -X DELETE "${BASE}/v1/sandboxes/sb1" \
+  -H "Authorization: Bearer ${ROUTER_TOKEN}" -o /dev/null -w '%{http_code}' | grep -q 204
+
+echo "--- MCP: initialize ---"
+curl -fsS "${BASE}/mcp" \
+  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"e2e","version":"1.0"},"capabilities":{}}}' | jq .
+
+echo "--- MCP: tools/list ---"
+curl -fsS "${BASE}/mcp" \
+  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq -e '.result.tools[0].name == "bash"'
+
+echo "--- MCP: bash via default sandbox ---"
+curl -fsS "${BASE}/mcp" \
+  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo default-sandbox-works"}}}' | jq -e '.result.content[0].text | test("default-sandbox-works")'
+
+echo "--- MCP: create sandbox and bash via X-Sandbox-Id ---"
+curl -fsS "${BASE}/v1/sandboxes" \
+  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"sessionId":"mcp-e2e","sandboxId":"mcp-sb1","owner":"e2e","ttlSeconds":600}'
+
+sleep 5
+
+curl -fsS "${BASE}/mcp" \
+  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'X-Sandbox-Id: mcp-sb1' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo header-sandbox-works"}}}' | jq -e '.result.content[0].text | test("header-sandbox-works")'
+
+curl -sS -X DELETE "${BASE}/v1/sandboxes/mcp-sb1" \
   -H "Authorization: Bearer ${ROUTER_TOKEN}" -o /dev/null -w '%{http_code}' | grep -q 204
 
 export BOXY_E2E_BASE_URL="${BASE}"

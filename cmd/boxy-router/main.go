@@ -32,6 +32,9 @@ func main() {
 	srv.StartReaper(ctx, &wg)
 	startupCtx, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	srv.StartupSync(startupCtx)
+	if err := srv.EnsureDefaultSandbox(startupCtx); err != nil {
+		slog.Warn("default sandbox creation on startup failed (will retry lazily)", "err", err)
+	}
 	cancelStartup()
 	go func() {
 		slog.Info("listening", "addr", cfg.ListenAddr)

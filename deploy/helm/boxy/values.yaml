@@ -43,6 +43,26 @@ vmMetricsIntervalMs: 0         # 0 = disabled
 vmPullPolicy: "if_missing"     # if_missing | always | never
 libkrunfwPath: ""              # empty = microsandbox default
 
+# --- Default sandbox (for MCP clients that don't specify X-Sandbox-Id) ---
+defaultSandbox:
+  enabled: false
+  sandboxId: "default"
+  owner: "system"
+  ttlSeconds: 86400
+  env: {}
+  allowedBinaries: ["curl", "python3"]
+  vm:
+    memoryMb: 512
+    vcpus: 1
+    workdir: "/workspace"
+    shell: "/bin/bash"
+    idleTimeoutSec: 0
+  network:
+    allowInternetAccess: false
+    allowedEgressDomains: []
+  volumes: []
+  patches: []
+
 # How the controller pod accesses /dev/kvm.
 #   device   — request "devices.kubevirt.io/kvm: 1" (production: requires KubeVirt
 #              or a KVM device plugin installed on the cluster)

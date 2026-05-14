@@ -76,6 +76,24 @@ spec:
               value: {{ .Values.kvmMode | quote }}
             - name: BOXY_MTLS_CONTROLLER_SECRET
               value: {{ include "boxy.fullname" . }}-mtls-controller
+            - name: BOXY_DEFAULT_SANDBOX_ENABLED
+              value: {{ .Values.defaultSandbox.enabled | quote }}
+            {{- if .Values.defaultSandbox.enabled }}
+            - name: BOXY_DEFAULT_SANDBOX_CONFIG
+              value: {{
+                dict
+                  "sessionId"       "default-box"
+                  "sandboxId"       .Values.defaultSandbox.sandboxId
+                  "owner"           .Values.defaultSandbox.owner
+                  "ttlSeconds"      .Values.defaultSandbox.ttlSeconds
+                  "env"             .Values.defaultSandbox.env
+                  "allowedBinaries" .Values.defaultSandbox.allowedBinaries
+                  "vm"              .Values.defaultSandbox.vm
+                  "network"         .Values.defaultSandbox.network
+                  "volumes"         .Values.defaultSandbox.volumes
+                  "patches"         .Values.defaultSandbox.patches
+                | toJson | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resourcesRouter | nindent 12 }}
           volumeMounts:

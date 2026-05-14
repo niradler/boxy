@@ -23,19 +23,19 @@ import (
 )
 
 type Config struct {
-	ListenAddr     string
-	AuthToken      string
+	ListenAddr       string
+	AuthToken        string
 	SandboxNamespace string
-	MaxBodyBytes   int
-	MaxOutputBytes int
-	MaxTimeoutSec  int
-	MaxArgs        int
-	MaxEnvKeys     int
-	MaxConcurrency int
+	MaxBodyBytes     int
+	MaxOutputBytes   int
+	MaxTimeoutSec    int
+	MaxArgs          int
+	MaxEnvKeys       int
+	MaxConcurrency   int
 	MaxSandboxTTLSec int
-	ReaperEvery    time.Duration
-	Kube           kubernetes.Interface
-	RESTConfig     *rest.Config
+	ReaperEvery      time.Duration
+	Kube             kubernetes.Interface
+	RESTConfig       *rest.Config
 
 	ControllerImage           string
 	ControllerPort            int32
@@ -48,6 +48,8 @@ type Config struct {
 	TLSCAPath                 string
 	TLSClientCertPath         string
 	TLSClientKeyPath          string
+	DefaultSandboxEnabled     bool
+	DefaultSandboxConfig      *api.SandboxCreateBody
 	VMLogLevel                string
 	VMMetricsIntMs            int
 	VMPullPolicy              string
@@ -143,6 +145,27 @@ func ConfigFromEnv() (*Config, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8080"
 	}
+	cfg.DefaultSandboxEnabled = envBool("BOXY_DEFAULT_SANDBOX_ENABLED", false)
+	if cfg.DefaultSandboxEnabled {
+		raw := strings.TrimSpace(os.Getenv("BOXY_DEFAULT_SANDBOX_CONFIG"))
+		if raw == "" {
+			return nil, fmt.Errorf("BOXY_DEFAULT_SANDBOX_CONFIG is required when default sandbox is enabled")
+		}
+		var body api.SandboxCreateBody
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			return nil, fmt.Errorf("parse BOXY_DEFAULT_SANDBOX_CONFIG: %w", err)
+		}
+		if body.SandboxID == "" {
+			body.SandboxID = "default"
+		}
+		if body.Owner == "" {
+			body.Owner = "system"
+		}
+		if body.SessionID == "" {
+			body.SessionID = "default-box"
+		}
+		cfg.DefaultSandboxConfig = &body
+	}
 	return cfg, nil
 }
 
@@ -228,6 +251,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sandboxes", s.withAuth(s.withBodyLimit(s.handleSandboxCreate)))
 	mux.HandleFunc("GET /v1/sandboxes/{sandboxId}", s.withAuth(s.handleSandboxGet))
 	mux.HandleFunc("DELETE /v1/sandboxes/{sandboxId}", s.withAuth(s.handleSandboxDelete))
+	mux.Handle("/mcp", s.withAuthHandler(s.newMCPHandler()))
 	return mux
 }
 
@@ -246,6 +270,18 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) withAuthHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Get("Authorization")
+		const p = "Bearer "
+		if !strings.HasPrefix(h, p) || strings.TrimSpace(h[len(p):]) != s.cfg.AuthToken {
+			s.jsonErr(w, http.StatusUnauthorized, "unauthorized", "")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) withBodyLimit(next http.HandlerFunc) http.HandlerFunc {
@@ -300,11 +336,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scheme := "https"
-	if s.cfg.MTLSDisabled {
-		scheme = "http"
-	}
-	baseURL := fmt.Sprintf("%s://%s:%d", scheme, route.ControllerIP, route.Port)
+	baseURL := s.controllerURL(route)
 
 	result, err := s.ctrlClient.Exec(ctx, baseURL, ExecReq{
 		SandboxID:      body.SandboxID,
@@ -342,72 +374,11 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, err.Error(), "provisioning")
 		return
 	}
-	ctx := r.Context()
 
-	pod, err := s.claimControllerSeat(ctx)
+	resp, err := s.createSandboxFromBody(r.Context(), &body)
 	if err != nil {
-		s.jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("controller pod: %v", err), "controller_pod")
+		s.jsonErr(w, http.StatusBadGateway, err.Error(), "create_sandbox")
 		return
-	}
-	if pod.Status.PodIP == "" {
-		var waitErr error
-		pod, waitErr = kube.WaitForPodIP(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, 30*time.Second)
-		if waitErr != nil {
-			_ = kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, -1)
-			s.jsonErr(w, http.StatusServiceUnavailable, fmt.Sprintf("controller pod not ready: %v", waitErr), "controller_not_ready")
-			return
-		}
-	}
-
-	if err := kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.TTLSeconds); err != nil {
-		s.log.Warn("failed to refresh controller TTL before create", "pod", pod.Name, "err", err)
-	}
-
-	scheme := "https"
-	if s.cfg.MTLSDisabled {
-		scheme = "http"
-	}
-	baseURL := fmt.Sprintf("%s://%s:%d", scheme, pod.Status.PodIP, s.ctrlSpec.Port)
-
-	req := CreateSandboxReq{
-		SandboxID:       body.SandboxID,
-		Env:             body.Env,
-		AllowedBinaries: body.AllowedBinaries,
-		VM:              body.VM,
-		Network:         body.Network,
-		Volumes:         body.Volumes,
-		Patches:         body.Patches,
-		TTLSeconds:      body.TTLSeconds,
-	}
-	if err := s.ctrlClient.CreateSandbox(ctx, baseURL, req); err != nil {
-		if derr := kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, -1); derr != nil {
-			s.log.Warn("release controller seat after create failure",
-				"pod", pod.Name, "err", derr)
-		}
-		s.jsonErr(w, http.StatusBadGateway, fmt.Sprintf("create sandbox: %v", err), "create_sandbox")
-		return
-	}
-
-	route := kube.SandboxRoute{
-		ControllerPodName: pod.Name,
-		ControllerIP:      pod.Status.PodIP,
-		Port:              s.ctrlSpec.Port,
-	}
-	if err := s.store.Set(ctx, body.SandboxID, route); err != nil {
-		s.jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("store route: %v", err), "store")
-		return
-	}
-
-	_ = kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.TTLSeconds)
-
-	resp := &api.SandboxResponseBody{
-		SandboxID: body.SandboxID,
-		SessionID: body.SessionID,
-		Owner:     body.Owner,
-		Runtime:   "microsandbox",
-		PodRef:    api.PodRef{Namespace: pod.Namespace, Name: pod.Name, UID: string(pod.UID)},
-		Phase:     string(pod.Status.Phase),
-		Ready:     kube.PodRunningReady(pod),
 	}
 	s.writeJSON(w, http.StatusCreated, resp)
 }
@@ -470,11 +441,7 @@ func (s *Server) handleSandboxDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scheme := "https"
-	if s.cfg.MTLSDisabled {
-		scheme = "http"
-	}
-	baseURL := fmt.Sprintf("%s://%s:%d", scheme, route.ControllerIP, route.Port)
+	baseURL := s.controllerURL(route)
 
 	if err := s.ctrlClient.DeleteSandbox(ctx, baseURL, DeleteSandboxReq{SandboxID: id}); err != nil {
 		s.jsonErr(w, http.StatusBadGateway, err.Error(), "delete_sandbox")
