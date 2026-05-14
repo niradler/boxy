@@ -1,108 +1,110 @@
 #!/usr/bin/env bash
+# Spin up a kind cluster, deploy boxy via Helm, and run the full e2e validation suite.
 set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-boxy-e2e}"
 CTX="kind-${CLUSTER_NAME}"
 TAG="${TAG:-e2e}"
 IMAGE_REPO="${IMAGE_REPO:-boxydev}"
+NAMESPACE="${NAMESPACE:-boxy}"
+RELEASE_NAME="${RELEASE_NAME:-boxy}"
+
+# -----------------------------------------------------------------------
+# 1. Kind cluster
+# -----------------------------------------------------------------------
 
 if ! kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+  echo ">>> Creating kind cluster: ${CLUSTER_NAME}"
   kind create cluster --name "${CLUSTER_NAME}"
 fi
 
 kubectl cluster-info --context "${CTX}"
 
+# -----------------------------------------------------------------------
+# 2. Build and load images
+# -----------------------------------------------------------------------
+
+echo ">>> Building images"
 make docker-build "IMAGE_REPO=${IMAGE_REPO}" "TAG=${TAG}"
 
+echo ">>> Loading images into kind"
 kind load docker-image "${IMAGE_REPO}/boxy-router:${TAG}" --name "${CLUSTER_NAME}"
 kind load docker-image "${IMAGE_REPO}/boxy-controller:${TAG}" --name "${CLUSTER_NAME}"
+kind load docker-image "${IMAGE_REPO}/boxy-operator:${TAG}" --name "${CLUSTER_NAME}"
+
+# -----------------------------------------------------------------------
+# 3. Install CRD + Helm chart
+# -----------------------------------------------------------------------
 
 ROUTER_TOKEN="$(openssl rand -hex 16)"
 
-helm upgrade --install boxy ./deploy/helm/boxy -n boxy --create-namespace \
+echo ">>> Installing CRD"
+kubectl --context "${CTX}" apply -f deploy/helm/boxy/crds/sandbox-crd.yaml
+
+echo ">>> Installing Helm chart"
+helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
+  -n "${NAMESPACE}" --create-namespace \
   --set "imageRouter=${IMAGE_REPO}/boxy-router:${TAG}" \
   --set "controllerImage=${IMAGE_REPO}/boxy-controller:${TAG}" \
+  --set "imageOperator=${IMAGE_REPO}/boxy-operator:${TAG}" \
   --set routerReplicas=1 \
+  --set controllerReplicas=1 \
   --set "routerToken=${ROUTER_TOKEN}" \
-  --set reaperIntervalSeconds=5 \
   --set mtlsDisabled=true \
   --set kvmMode=hostpath \
-  --set defaultSandbox.enabled=true
+  --set defaultSandbox.enabled=false \
+  --kube-context "${CTX}"
 
-kubectl --context "${CTX}" rollout status deployment/boxy-router -n boxy --timeout=180s
-kubectl --context "${CTX}" wait -n boxy --for=condition=Ready pods -l app=boxy-router --timeout=180s
+# -----------------------------------------------------------------------
+# 4. Wait for rollout
+# -----------------------------------------------------------------------
 
-kubectl --context "${CTX}" -n boxy port-forward svc/boxy-router 18080:8080 &
+echo ">>> Waiting for deployments"
+kubectl --context "${CTX}" -n "${NAMESPACE}" rollout status deployment/${RELEASE_NAME}-router --timeout=180s
+kubectl --context "${CTX}" -n "${NAMESPACE}" rollout status deployment/${RELEASE_NAME}-operator --timeout=180s
+kubectl --context "${CTX}" -n "${NAMESPACE}" rollout status statefulset/${RELEASE_NAME}-ctrl --timeout=180s
+
+echo ">>> Waiting for all pods ready"
+kubectl --context "${CTX}" -n "${NAMESPACE}" wait --for=condition=Ready pods --all --timeout=180s
+
+# -----------------------------------------------------------------------
+# 5. Port-forward
+# -----------------------------------------------------------------------
+
+kubectl --context "${CTX}" -n "${NAMESPACE}" port-forward svc/${RELEASE_NAME}-router 18080:8080 &
 PF=$!
 trap 'kill ${PF} 2>/dev/null || true' EXIT
 
 BASE="http://127.0.0.1:18080"
-for i in $(seq 1 15); do
+echo ">>> Waiting for router health..."
+for i in $(seq 1 30); do
   curl -fsS "${BASE}/healthz" 2>/dev/null | grep -q ok && break
   sleep 2
 done
 curl -fsS "${BASE}/healthz" | grep ok
 
-CREATE="$(curl -fsS "${BASE}/v1/sandboxes" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d '{"sessionId":"s1","sandboxId":"sb1","owner":"alice","ttlSeconds":86400}')"
-echo "${CREATE}"
+# -----------------------------------------------------------------------
+# 6. Run e2e validation scripts
+# -----------------------------------------------------------------------
 
-curl -fsS "${BASE}/v1/exec" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d '{"sessionId":"s1","sandboxId":"sb1","command":"sh","args":["-c","echo hello"],"timeoutSeconds":60}' | jq -e '.stdout | test("hello")'
+export NAMESPACE RELEASE_NAME ROUTER_TOKEN
+export BASE_URL="${BASE}"
+export KUBECTL_CTX="${CTX}"
+export CHART_DIR="deploy/helm/boxy"
 
-curl -fsS "${BASE}/v1/exec" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d '{"sessionId":"s1","sandboxId":"sb1","command":"sh","args":["-c","echo world"],"timeoutSeconds":60}' | jq -e '.stdout | test("world")'
+echo ""
+echo ">>> Running e2e validation suite"
+bash test/e2e/scripts/run-all.sh
 
-curl -sS -X DELETE "${BASE}/v1/sandboxes/sb1" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" -o /dev/null -w '%{http_code}' | grep -q 204
+# -----------------------------------------------------------------------
+# 7. Run Go e2e tests
+# -----------------------------------------------------------------------
 
-echo "--- MCP: initialize ---"
-curl -fsS "${BASE}/mcp" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"e2e","version":"1.0"},"capabilities":{}}}' | jq .
-
-echo "--- MCP: tools/list ---"
-curl -fsS "${BASE}/mcp" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq -e '.result.tools[0].name == "bash"'
-
-echo "--- MCP: bash via default sandbox ---"
-curl -fsS "${BASE}/mcp" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo default-sandbox-works"}}}' | jq -e '.result.content[0].text | test("default-sandbox-works")'
-
-echo "--- MCP: create sandbox and bash via X-Sandbox-Id ---"
-curl -fsS "${BASE}/v1/sandboxes" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d '{"sessionId":"mcp-e2e","sandboxId":"mcp-sb1","owner":"e2e","ttlSeconds":600}'
-
-sleep 5
-
-curl -fsS "${BASE}/mcp" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -H 'X-Sandbox-Id: mcp-sb1' \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo header-sandbox-works"}}}' | jq -e '.result.content[0].text | test("header-sandbox-works")'
-
-curl -sS -X DELETE "${BASE}/v1/sandboxes/mcp-sb1" \
-  -H "Authorization: Bearer ${ROUTER_TOKEN}" -o /dev/null -w '%{http_code}' | grep -q 204
-
+echo ""
+echo ">>> Running Go e2e tests"
 export BOXY_E2E_BASE_URL="${BASE}"
 export BOXY_E2E_ROUTER_TOKEN="${ROUTER_TOKEN}"
 go test -v -count=1 -tags=e2e ./test/e2e/... -timeout=15m
 
-echo "e2e ok"
+echo ""
+echo ">>> All e2e tests passed"
