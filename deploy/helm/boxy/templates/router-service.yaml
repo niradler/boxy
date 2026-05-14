@@ -8,5 +8,5 @@ spec:
     app: boxy-router
   ports:
     - name: http
-      port: {{ .Values.routerServicePort }}
+      port: {{ .Values.router.servicePort }}
       targetPort: http

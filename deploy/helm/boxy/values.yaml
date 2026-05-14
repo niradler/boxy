@@ -1,90 +1,116 @@
-imageRouter: boxy-router:e2e
-imagePullPolicy: IfNotPresent
+global:
+  # Prepended to all image repositories. Use to redirect all images to a private mirror.
+  # e.g., "my-registry.example.com" → "my-registry.example.com/ghcr.io/niradler/boxy-router:tag"
+  # Leave empty to use repository values as-is.
+  imageRegistry: ""
+  imagePullPolicy: IfNotPresent
+  # List of pull secrets applied to every pod. e.g., [{name: "my-registry-creds"}]
+  imagePullSecrets: []
+  sandboxNamespace: ""
 
-sandboxNamespace: ""
+# --- Router ---
+router:
+  image:
+    repository: ghcr.io/niradler/boxy-router
+    # Overrides Chart.AppVersion when set.
+    tag: ""
+    # If set, takes precedence over tag. e.g., "sha256:abc123..."
+    digest: ""
 
-routerReplicas: 1
-routerServicePort: 8080
+  replicas: 1
+  servicePort: 8080
 
-# --- Router autoscaling (HPA) ---
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 5
-  targetCPUUtilizationPercentage: 70
-  # targetMemoryUtilizationPercentage: 80
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    # targetMemoryUtilizationPercentage: 80
 
-routerToken: "changeme-router"
+  auth:
+    # staticToken: optional bypass token for local dev / e2e.
+    # Leave empty (default) to require callers to present a valid K8s SA token.
+    # If set, both the SA token path AND this static token are accepted.
+    staticToken: ""
+    # Seconds to cache a validated K8s SA token before re-calling TokenReview.
+    cacheTTLSeconds: 30
 
-resourcesRouter:
-  requests:
-    cpu: 50m
-    memory: 64Mi
-  limits:
-    cpu: "1"
-    memory: 512Mi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
 
-routerServiceAccount: boxy-router
+  serviceAccount: boxy-router
 
-# --- nsjail controller (StatefulSet) ---
-controllerImage: boxy-controller:e2e
-controllerPort: 8080
-controllerReplicas: 1
-maxSandboxesPerController: 20
-controllerServiceAccount: boxy-controller
+  # Default sandbox for MCP clients that don't specify X-Sandbox-Id.
+  defaultSandbox:
+    enabled: false
+    sandboxId: "default"
+    owner: "system"
+    ttlSeconds: 86400
+    env: {}
+    allowedBinaries: ["curl"]
+    vm:
+      memoryMb: 512
+      vcpus: 1
+      workdir: "/workspace"
+      shell: "/bin/bash"
+      idleTimeoutSec: 0
+    network:
+      allowInternetAccess: false
+      allowedEgressDomains: []
+    volumes: []
 
-resourcesController:
-  requests:
-    cpu: 250m
-    memory: 256Mi
-  limits:
-    cpu: "2"
-    memory: 2Gi
+# --- Controller (nsjail StatefulSet) ---
+# The controller pod requires CAP_SYS_ADMIN for overlayfs per-sandbox filesystem.
+controller:
+  image:
+    repository: ghcr.io/niradler/boxy-controller
+    tag: ""
+    digest: ""
 
-# mTLS between router and controller. Set mtlsDisabled: true for local dev.
-mtlsDisabled: false
-mtlsCACN: "boxy-ca"
-mtlsServerCN: "boxy-controller"
-mtlsClientCN: "boxy-router"
+  port: 8080
+  replicas: 1
+  maxSandboxes: 20
+  serviceAccount: boxy-controller
+  logLevel: "warn" # off | error | warn | info | debug | trace
 
-# K8s NetworkPolicy applied to controller pods (default-deny egress).
-# Per-sandbox network isolation is enforced by nsjail network namespaces.
-enableSandboxNetworkPolicy: true
+  nsjail:
+    path: "/usr/sbin/nsjail"
+    rootfs: "/rootfs/ubuntu-24.04"
+    binariesDir: "/usr/local/bin"
 
-# Controller log level (RUST_LOG).
-logLevel: "warn"               # off | error | warn | info | debug | trace
+  # K8s NetworkPolicy applied to controller pods (default-deny egress).
+  # Per-sandbox network isolation is enforced by nsjail network namespaces.
+  networkPolicy:
+    enabled: true
 
-# nsjail config (env vars on the controller pod).
-nsjailPath: "/usr/sbin/nsjail"
-nsjailRootfs: "/rootfs/ubuntu-24.04"
-nsjailBinariesDir: "/usr/local/bin"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
 
-# --- Default sandbox (for MCP clients that don't specify X-Sandbox-Id) ---
-defaultSandbox:
-  enabled: false
-  sandboxId: "default"
-  owner: "system"
-  ttlSeconds: 86400
-  env: {}
-  allowedBinaries: ["curl", "python3"]
-  vm:
-    memoryMb: 512
-    vcpus: 1
-    workdir: "/workspace"
-    shell: "/bin/bash"
-    idleTimeoutSec: 0
-  network:
-    allowInternetAccess: false
-    allowedEgressDomains: []
-  volumes: []
+# --- Operator ---
+operator:
+  image:
+    repository: ghcr.io/niradler/boxy-operator
+    tag: ""
+    digest: ""
 
-# The controller pod requires CAP_SYS_ADMIN for overlayfs per-sandbox filesystem
-# isolation. No hardware dependency — overlayfs is a standard kernel feature
-# available on all Linux systems. Set in the pod securityContext (see template).
+  serviceAccount: boxy-operator
+  terminatedRetentionSeconds: 3600
+  maxControllerReplicas: 50
+  minControllerReplicas: 1
 
-# --- Sandbox Operator ---
-imageOperator: boxy-operator:e2e
-operatorServiceAccount: boxy-operator
-terminatedRetentionSeconds: 3600
-maxControllerReplicas: 50
-minControllerReplicas: 1
+# --- mTLS (router/operator ↔ controller) ---
+mtls:
+  disabled: false
+  caCN: "boxy-ca"
+  serverCN: "boxy-controller"
+  clientCN: "boxy-router"

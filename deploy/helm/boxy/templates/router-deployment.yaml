@@ -4,8 +4,8 @@ metadata:
   name: {{ include "boxy.fullname" . }}-router
   namespace: {{ .Release.Namespace }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.routerReplicas }}
+  {{- if not .Values.router.autoscaling.enabled }}
+  replicas: {{ .Values.router.replicas }}
   {{- end }}
   selector:
     matchLabels:
@@ -15,7 +15,8 @@ spec:
       labels:
         app: boxy-router
     spec:
-      serviceAccountName: {{ .Values.routerServiceAccount }}
+      serviceAccountName: {{ .Values.router.serviceAccount }}
+      automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -24,8 +25,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: router
-          image: {{ .Values.imageRouter }}
-          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          image: {{ include "boxy.image" (dict "root" . "image" .Values.router.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -39,17 +40,21 @@ spec:
           env:
             - name: BOXY_LISTEN_ADDR
               value: ":8080"
+            - name: BOXY_AUTH_CACHE_TTL_SECONDS
+              value: {{ .Values.router.auth.cacheTTLSeconds | default 30 | quote }}
+            {{- if .Values.router.auth.staticToken }}
             - name: BOXY_ROUTER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "boxy.fullname" . }}-tokens
                   key: router-token
+            {{- end }}
             - name: BOXY_SANDBOX_NAMESPACE
               value: {{ include "boxy.sandboxNamespace" . | quote }}
             - name: BOXY_CONTROLLER_PORT
-              value: {{ .Values.controllerPort | quote }}
+              value: {{ .Values.controller.port | quote }}
             - name: BOXY_MTLS_DISABLED
-              value: {{ .Values.mtlsDisabled | quote }}
+              value: {{ .Values.mtls.disabled | quote }}
             - name: BOXY_TLS_CA_PATH
               value: "/tls/ca.crt"
             - name: BOXY_TLS_CLIENT_CERT_PATH
@@ -57,29 +62,29 @@ spec:
             - name: BOXY_TLS_CLIENT_KEY_PATH
               value: "/tls/tls.key"
             - name: BOXY_DEFAULT_SANDBOX_ENABLED
-              value: {{ .Values.defaultSandbox.enabled | quote }}
-            {{- if .Values.defaultSandbox.enabled }}
+              value: {{ .Values.router.defaultSandbox.enabled | quote }}
+            {{- if .Values.router.defaultSandbox.enabled }}
             - name: BOXY_DEFAULT_SANDBOX_CONFIG
               value: {{
                 dict
                   "sessionId"       "default-box"
-                  "sandboxId"       .Values.defaultSandbox.sandboxId
-                  "owner"           .Values.defaultSandbox.owner
-                  "ttlSeconds"      .Values.defaultSandbox.ttlSeconds
-                  "env"             .Values.defaultSandbox.env
-                  "allowedBinaries" .Values.defaultSandbox.allowedBinaries
-                  "vm"              .Values.defaultSandbox.vm
-                  "network"         .Values.defaultSandbox.network
-                  "volumes"         .Values.defaultSandbox.volumes
-                  "patches"         .Values.defaultSandbox.patches
+                  "sandboxId"       .Values.router.defaultSandbox.sandboxId
+                  "owner"           .Values.router.defaultSandbox.owner
+                  "ttlSeconds"      .Values.router.defaultSandbox.ttlSeconds
+                  "env"             .Values.router.defaultSandbox.env
+                  "allowedBinaries" .Values.router.defaultSandbox.allowedBinaries
+                  "vm"              .Values.router.defaultSandbox.vm
+                  "network"         .Values.router.defaultSandbox.network
+                  "volumes"         .Values.router.defaultSandbox.volumes
+                  "patches"         .Values.router.defaultSandbox.patches
                 | toJson | quote }}
             {{- end }}
           resources:
-            {{- toYaml .Values.resourcesRouter | nindent 12 }}
+            {{- toYaml .Values.router.resources | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if not .Values.mtlsDisabled }}
+            {{- if not .Values.mtls.disabled }}
             - name: tls
               mountPath: /tls
               readOnly: true
@@ -87,8 +92,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if not .Values.mtlsDisabled }}
+        {{- if not .Values.mtls.disabled }}
         - name: tls
           secret:
             secretName: {{ include "boxy.fullname" . }}-mtls-router
         {{- end }}
+      {{- include "boxy.imagePullSecrets" . | nindent 6 }}

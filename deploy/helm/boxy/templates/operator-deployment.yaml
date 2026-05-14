@@ -13,7 +13,8 @@ spec:
       labels:
         app: boxy-operator
     spec:
-      serviceAccountName: {{ .Values.operatorServiceAccount }}
+      serviceAccountName: {{ .Values.operator.serviceAccount }}
+      automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -22,8 +23,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: operator
-          image: {{ .Values.imageOperator }}
-          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          image: {{ include "boxy.image" (dict "root" . "image" .Values.operator.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -39,17 +40,17 @@ spec:
             - name: BOXY_CONTROLLER_HEADLESS_SERVICE
               value: {{ include "boxy.fullname" . }}-ctrl-headless
             - name: BOXY_CONTROLLER_PORT
-              value: {{ .Values.controllerPort | quote }}
+              value: {{ .Values.controller.port | quote }}
             - name: BOXY_MAX_SANDBOXES_PER_CONTROLLER
-              value: {{ .Values.maxSandboxesPerController | quote }}
+              value: {{ .Values.controller.maxSandboxes | quote }}
             - name: BOXY_MAX_CONTROLLER_REPLICAS
-              value: {{ .Values.maxControllerReplicas | quote }}
+              value: {{ .Values.operator.maxControllerReplicas | quote }}
             - name: BOXY_MIN_CONTROLLER_REPLICAS
-              value: {{ .Values.minControllerReplicas | quote }}
+              value: {{ .Values.operator.minControllerReplicas | quote }}
             - name: BOXY_TERMINATED_RETENTION_SECONDS
-              value: {{ .Values.terminatedRetentionSeconds | quote }}
+              value: {{ .Values.operator.terminatedRetentionSeconds | quote }}
             - name: BOXY_MTLS_DISABLED
-              value: {{ .Values.mtlsDisabled | quote }}
+              value: {{ .Values.mtls.disabled | quote }}
             - name: BOXY_TLS_CA_PATH
               value: "/tls/ca.crt"
             - name: BOXY_TLS_CLIENT_CERT_PATH
@@ -81,7 +82,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if not .Values.mtlsDisabled }}
+            {{- if not .Values.mtls.disabled }}
             - name: tls
               mountPath: /tls
               readOnly: true
@@ -89,8 +90,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if not .Values.mtlsDisabled }}
+        {{- if not .Values.mtls.disabled }}
         - name: tls
           secret:
             secretName: {{ include "boxy.fullname" . }}-mtls-router
         {{- end }}
+      {{- include "boxy.imagePullSecrets" . | nindent 6 }}

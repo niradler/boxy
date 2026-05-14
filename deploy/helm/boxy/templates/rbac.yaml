@@ -18,9 +18,33 @@ metadata:
   namespace: {{ include "boxy.sandboxNamespace" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.routerServiceAccount }}
+    name: {{ .Values.router.serviceAccount }}
     namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: boxy-router
+---
+# ClusterRole that grants the router the right to validate bearer tokens via
+# the K8s TokenReview API. Required for SA-token-based authentication.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "boxy.fullname" . }}-token-reviewer
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "boxy.fullname" . }}-token-reviewer
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.router.serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "boxy.fullname" . }}-token-reviewer

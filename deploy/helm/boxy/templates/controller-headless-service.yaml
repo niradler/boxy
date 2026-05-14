@@ -12,5 +12,5 @@ spec:
     app: boxy-controller
   ports:
     - name: http
-      port: {{ .Values.controllerPort }}
+      port: {{ .Values.controller.port }}
       targetPort: http

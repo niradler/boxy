@@ -7,7 +7,7 @@ metadata:
     app: boxy-controller
 spec:
   serviceName: {{ include "boxy.fullname" . }}-ctrl-headless
-  replicas: {{ .Values.controllerReplicas }}
+  replicas: {{ .Values.controller.replicas }}
   podManagementPolicy: Parallel
   selector:
     matchLabels:
@@ -19,23 +19,23 @@ spec:
         boxy.dev/managed-by: boxy
         boxy.dev/controller: "true"
     spec:
-      serviceAccountName: {{ .Values.controllerServiceAccount }}
+      serviceAccountName: {{ .Values.controller.serviceAccount }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
       containers:
         - name: controller
-          image: {{ .Values.controllerImage }}
-          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          image: {{ include "boxy.image" (dict "root" . "image" .Values.controller.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
             - name: http
-              containerPort: {{ .Values.controllerPort }}
+              containerPort: {{ .Values.controller.port }}
           env:
             - name: BOXY_CONTROLLER_PORT
-              value: {{ .Values.controllerPort | quote }}
+              value: {{ .Values.controller.port | quote }}
             - name: BOXY_MAX_SANDBOXES
-              value: {{ .Values.maxSandboxesPerController | quote }}
+              value: {{ .Values.controller.maxSandboxes | quote }}
             - name: BOXY_MTLS_DISABLED
-              value: {{ .Values.mtlsDisabled | quote }}
+              value: {{ .Values.mtls.disabled | quote }}
             - name: BOXY_TLS_CERT_PATH
               value: "/tls/tls.crt"
             - name: BOXY_TLS_KEY_PATH
@@ -43,18 +43,18 @@ spec:
             - name: BOXY_TLS_CA_PATH
               value: "/tls/ca.crt"
             - name: RUST_LOG
-              value: {{ .Values.logLevel | default "warn" | quote }}
+              value: {{ .Values.controller.logLevel | default "warn" | quote }}
             - name: BOXY_SANDBOX_PROVIDER
               value: "nsjail"
             - name: BOXY_NSJAIL_PATH
-              value: {{ .Values.nsjailPath | default "/usr/sbin/nsjail" | quote }}
+              value: {{ .Values.controller.nsjail.path | default "/usr/sbin/nsjail" | quote }}
             - name: BOXY_NSJAIL_ROOTFS
-              value: {{ .Values.nsjailRootfs | default "/rootfs/ubuntu-24.04" | quote }}
+              value: {{ .Values.controller.nsjail.rootfs | default "/rootfs/ubuntu-24.04" | quote }}
             - name: BOXY_NSJAIL_SANDBOX_ROOT
               value: "/var/lib/boxy/sandboxes"
             - name: BOXY_NSJAIL_BINARIES_DIR
-              value: {{ .Values.nsjailBinariesDir | default "/usr/local/bin" | quote }}
-          {{- with .Values.resourcesController }}
+              value: {{ .Values.controller.nsjail.binariesDir | default "/usr/local/bin" | quote }}
+          {{- with .Values.controller.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -71,7 +71,7 @@ spec:
               # MKNOD: create device nodes inside sandbox.
               # SETPCAP: required by nsjail to set securebits (PR_SET_SECUREBITS).
               add: ["SYS_ADMIN", "SETUID", "SETGID", "NET_ADMIN", "SYS_CHROOT", "MKNOD", "SETPCAP"]
-          {{- if .Values.mtlsDisabled }}
+          {{- if .Values.mtls.disabled }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -105,7 +105,7 @@ spec:
           volumeMounts:
             - name: sandbox-root
               mountPath: /var/lib/boxy/sandboxes
-            {{- if not .Values.mtlsDisabled }}
+            {{- if not .Values.mtls.disabled }}
             - name: tls
               mountPath: /tls
               readOnly: true
@@ -115,12 +115,9 @@ spec:
         # emptyDir is wiped on pod restart (acceptable since sandbox state is in-memory).
         - name: sandbox-root
           emptyDir: {}
-        {{- if not .Values.mtlsDisabled }}
+        {{- if not .Values.mtls.disabled }}
         - name: tls
           secret:
             secretName: {{ include "boxy.fullname" . }}-mtls-controller
         {{- end }}
-      {{- if .Values.imagePullSecret }}
-      imagePullSecrets:
-        - name: {{ .Values.imagePullSecret }}
-      {{- end }}
+      {{- include "boxy.imagePullSecrets" . | nindent 6 }}

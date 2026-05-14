@@ -36,22 +36,22 @@ kind load docker-image "${IMAGE_REPO}/boxy-operator:${TAG}" --name "${CLUSTER_NA
 # 4. Install CRD + Helm chart
 # -----------------------------------------------------------------------
 
-ROUTER_TOKEN="$(openssl rand -hex 16)"
-
 echo ">>> Installing CRD"
 kubectl --context "${CTX}" apply -f deploy/helm/boxy/crds/sandbox-crd.yaml
 
 echo ">>> Installing Helm chart"
 helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   -n "${NAMESPACE}" --create-namespace \
-  --set "imageRouter=${IMAGE_REPO}/boxy-router:${TAG}" \
-  --set "controllerImage=${IMAGE_REPO}/boxy-controller:${TAG}" \
-  --set "imageOperator=${IMAGE_REPO}/boxy-operator:${TAG}" \
-  --set routerReplicas=1 \
-  --set controllerReplicas=1 \
-  --set "routerToken=${ROUTER_TOKEN}" \
-  --set mtlsDisabled=true \
-  --set defaultSandbox.enabled=false \
+  --set "router.image.repository=${IMAGE_REPO}/boxy-router" \
+  --set "router.image.tag=${TAG}" \
+  --set "controller.image.repository=${IMAGE_REPO}/boxy-controller" \
+  --set "controller.image.tag=${TAG}" \
+  --set "operator.image.repository=${IMAGE_REPO}/boxy-operator" \
+  --set "operator.image.tag=${TAG}" \
+  --set router.replicas=1 \
+  --set controller.replicas=1 \
+  --set mtls.disabled=true \
+  --set router.defaultSandbox.enabled=false \
   --kube-context "${CTX}"
 
 # -----------------------------------------------------------------------
@@ -67,7 +67,21 @@ echo ">>> Waiting for all pods ready"
 kubectl --context "${CTX}" -n "${NAMESPACE}" wait --for=condition=Ready pods --all --timeout=180s
 
 # -----------------------------------------------------------------------
-# 6. Port-forward
+# 6. Obtain a K8s SA token for authenticating to the router
+# -----------------------------------------------------------------------
+# Create a dedicated e2e ServiceAccount and issue a short-lived bound token.
+# The router validates this via the K8s TokenReview API — no static secret needed.
+
+echo ">>> Creating e2e ServiceAccount"
+kubectl --context "${CTX}" -n "${NAMESPACE}" create serviceaccount boxy-e2e-client \
+  --dry-run=client -o yaml | kubectl --context "${CTX}" apply -f -
+
+echo ">>> Fetching e2e SA token"
+ROUTER_TOKEN="$(kubectl --context "${CTX}" -n "${NAMESPACE}" \
+  create token boxy-e2e-client --duration=3600s)"
+
+# -----------------------------------------------------------------------
+# 7. Port-forward
 # -----------------------------------------------------------------------
 
 kubectl --context "${CTX}" -n "${NAMESPACE}" port-forward svc/${RELEASE_NAME}-router 18080:8080 &

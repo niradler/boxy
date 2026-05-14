@@ -38,7 +38,7 @@ metadata:
   namespace: {{ include "boxy.sandboxNamespace" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.operatorServiceAccount }}
+    name: {{ .Values.operator.serviceAccount }}
     namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
