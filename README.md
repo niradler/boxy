@@ -5,7 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](go.mod)
 [![Rust](https://img.shields.io/badge/Rust-1.82+-CE412B?logo=rust)](controller/Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Helm chart](https://img.shields.io/badge/Helm-v0.1.0-0F1689?logo=helm)](deploy/helm/boxy)
+[![Helm chart](https://img.shields.io/badge/Helm-v0.0.2-0F1689?logo=helm)](oci://ghcr.io/niradler/charts/boxy)
 
 Each sandbox is an **nsjail** process jail: isolated filesystem, network namespace, and resource limits backed by a shared read-only Ubuntu 24.04 rootfs. No kernel modules, no container runtimes, no `/dev/kvm` — just a standard Linux node.
 
@@ -56,23 +56,22 @@ Every sandbox gets:
 - Docker for building images
 - Go ≥ 1.26 and Rust ≥ 1.82 for local development
 
-### Build images
+### Install with Helm (OCI registry — recommended)
+
+Images are published to Docker Hub and the Helm chart to GHCR OCI on every release.
 
 ```bash
-IMAGE_REPO=your.registry/boxy TAG=v0.1.0 make docker-build
-docker push your.registry/boxy/boxy-router:v0.1.0
-docker push your.registry/boxy/boxy-controller:v0.1.0
-docker push your.registry/boxy/boxy-operator:v0.1.0
+helm upgrade --install boxy oci://ghcr.io/niradler/charts/boxy \
+  --version 0.0.2 \
+  --namespace boxy --create-namespace \
+  --set routerToken="$(openssl rand -hex 16)"
 ```
 
-### Install with Helm
+### Install with Helm (from source)
 
 ```bash
 helm upgrade --install boxy ./deploy/helm/boxy \
   --namespace boxy --create-namespace \
-  --set imageRouter=your.registry/boxy/boxy-router:v0.1.0 \
-  --set controllerImage=your.registry/boxy/boxy-controller:v0.1.0 \
-  --set imageOperator=your.registry/boxy/boxy-operator:v0.1.0 \
   --set routerToken="$(openssl rand -hex 16)"
 ```
 

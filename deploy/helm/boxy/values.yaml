@@ -1,6 +1,6 @@
 global:
   # Prepended to all image repositories. Use to redirect all images to a private mirror.
-  # e.g., "my-registry.example.com" → "my-registry.example.com/ghcr.io/niradler/boxy-router:tag"
+  # e.g., "my-registry.example.com" → "my-registry.example.com/niradler/boxy-router:tag"
   # Leave empty to use repository values as-is.
   imageRegistry: ""
   imagePullPolicy: IfNotPresent
@@ -11,7 +11,7 @@ global:
 # --- Router ---
 router:
   image:
-    repository: ghcr.io/niradler/boxy-router
+    repository: niradler/boxy-router
     # Overrides Chart.AppVersion when set.
     tag: ""
     # If set, takes precedence over tag. e.g., "sha256:abc123..."
@@ -68,7 +68,7 @@ router:
 # The controller pod requires CAP_SYS_ADMIN for overlayfs per-sandbox filesystem.
 controller:
   image:
-    repository: ghcr.io/niradler/boxy-controller
+    repository: niradler/boxy-controller
     tag: ""
     digest: ""
 
@@ -99,7 +99,7 @@ controller:
 # --- Operator ---
 operator:
   image:
-    repository: ghcr.io/niradler/boxy-operator
+    repository: niradler/boxy-operator
     tag: ""
     digest: ""
 
