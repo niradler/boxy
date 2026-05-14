@@ -1,87 +1,57 @@
 # syntax=docker/dockerfile:1.7
+# NOTE: nsjail uses glibc-specific types (rlimit64, RLIM64_INFINITY) that
+# musl (Alpine) does not support. The runtime base is Debian slim (glibc).
+# The Rust binary is compiled with musl for a fully static executable.
 
-# Stage 1: Build the Rust controller binary.
-# microsandbox depends on libkrun/libkrunfw which target glibc, so we build on
-# Ubuntu 24.04 — the same toolchain the upstream microsandbox release uses.
-FROM rust:1.95 AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev libcap-ng-dev libdbus-1-dev libsqlite3-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Stage 1: Build the Rust controller binary (musl = static, no glibc dep).
+FROM rust:alpine AS rust-builder
+RUN apk add --no-cache musl-dev pkgconfig perl make cmake g++
 WORKDIR /build
 COPY controller/ .
 RUN cargo build --release --bin boxy-controller
 
-# Stage 2: Fetch the upstream microsandbox bundle (msb + libkrunfw).
-# Pinned to v0.4.5 to match the `microsandbox = "0.4.5"` SDK in Cargo.toml.
-FROM ubuntu:24.04 AS msb-fetch
-ARG MSB_VERSION=v0.4.5
-ARG TARGETARCH=amd64
+# Stage 2: Build nsjail from source (requires glibc headers).
+FROM debian:bookworm-slim AS nsjail-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl tar \
+        ca-certificates git bison flex \
+        libprotobuf-dev libnl-route-3-dev protobuf-compiler \
+        g++ make pkg-config \
     && rm -rf /var/lib/apt/lists/*
-WORKDIR /tmp/msb
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-        amd64) MSB_TARGET=linux-x86_64 ;; \
-        arm64) MSB_TARGET=linux-aarch64 ;; \
-        *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    BASE="https://github.com/superradcompany/microsandbox/releases/download/${MSB_VERSION}"; \
-    BUNDLE="microsandbox-${MSB_TARGET}.tar.gz"; \
-    curl -fsSL -o "${BUNDLE}" "${BASE}/${BUNDLE}"; \
-    curl -fsSL -o checksums.sha256 "${BASE}/checksums.sha256"; \
-    grep -F "${BUNDLE}" checksums.sha256 | sha256sum -c -; \
-    tar -xzf "${BUNDLE}"; \
-    ls -la
+RUN git clone --depth=1 https://github.com/google/nsjail.git /nsjail && \
+    cd /nsjail && make -j"$(nproc)"
 
-# Stage 3: Runtime image.
-# Ubuntu 24.04 (glibc 2.39) is required by the upstream msb binary.
-FROM ubuntu:24.04
+# Stage 3: Extract Ubuntu 24.04 as the pre-baked sandbox rootfs.
+FROM ubuntu:24.04 AS rootfs
 
-# CLIs that users can inject into VM sandboxes via allowedBinaries, plus
-# libraries needed by msb at runtime (libkrun pulls in dbus/cap-ng/sqlite).
+# Stage 4: Runtime — Debian slim (glibc, needed by nsjail).
+FROM debian:bookworm-slim
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash \
-        curl \
+        libprotobuf32 \
+        libnl-route-3-200 \
+        util-linux \
         ca-certificates \
-        python3 \
-        python3-pip \
-        unzip \
-        libcap-ng0 \
-        libdbus-1-3 \
-        libsqlite3-0 \
-        libssl3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
-    && unzip -q /tmp/awscliv2.zip -d /tmp \
-    && /tmp/aws/install \
-    && rm -rf /tmp/awscliv2.zip /tmp/aws \
-    && ln -sf /usr/bin/curl /usr/local/bin/curl \
-    && ln -sf /usr/bin/bash /usr/local/bin/bash \
-    && ln -sf /usr/bin/python3 /usr/local/bin/python3
+    && rm -rf /var/lib/apt/lists/*
 
-# Install the microsandbox `msb` binary and libkrunfw so the SDK's
-# `Command::new("msb")` spawn path resolves at runtime. Layout mirrors the
-# upstream install.sh: /usr/local/bin/msb + /usr/local/lib/libkrunfw.so.*
-COPY --from=msb-fetch /tmp/msb/msb /usr/local/bin/msb
-COPY --from=msb-fetch /tmp/msb/libkrunfw.so.5.2.1 /usr/local/lib/libkrunfw.so.5.2.1
-RUN chmod 755 /usr/local/bin/msb \
-    && ln -sf libkrunfw.so.5.2.1 /usr/local/lib/libkrunfw.so.5 \
-    && ln -sf libkrunfw.so.5 /usr/local/lib/libkrunfw.so \
-    && ldconfig
+COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail
 
-# Controller binary.
-COPY --from=builder /build/target/release/boxy-controller /usr/local/bin/boxy-controller
+# Pre-baked Ubuntu 24.04 rootfs for sandboxes (overlayfs lower dir).
+COPY --from=rootfs / /rootfs/ubuntu-24.04
 
-# Point the microsandbox SDK at our msb/libkrunfw locations. Without these,
-# resolve_msb_path / resolve_libkrunfw_path fall back to $HOME/.microsandbox
-# which doesn't exist in this image.
-ENV MSB_PATH=/usr/local/bin/msb \
-    BOXY_LIBKRUNFW_PATH=/usr/local/lib/libkrunfw.so \
-    LD_LIBRARY_PATH=/usr/local/lib
+# Static musl Rust binary — runs on any Linux regardless of glibc version.
+COPY --from=rust-builder /build/target/release/boxy-controller /usr/local/bin/boxy-controller
 
-# Controller needs root to access /dev/kvm. K8s SecurityContext drops Linux
-# capabilities and isolates the pod.
+ENV BOXY_SANDBOX_PROVIDER=nsjail \
+    BOXY_NSJAIL_PATH=/usr/sbin/nsjail \
+    BOXY_NSJAIL_ROOTFS=/rootfs/ubuntu-24.04 \
+    BOXY_NSJAIL_SANDBOX_ROOT=/var/lib/boxy/sandboxes \
+    BOXY_NSJAIL_BINARIES_DIR=/usr/local/bin
+
+RUN mkdir -p /var/lib/boxy/sandboxes
+
+# Requires CAP_SYS_ADMIN (overlayfs). Set in the pod securityContext:
+#   capabilities:
+#     add: [SYS_ADMIN, SETUID, SETGID, NET_ADMIN, SYS_CHROOT, MKNOD]
 USER root
 
 ENTRYPOINT ["/usr/local/bin/boxy-controller"]

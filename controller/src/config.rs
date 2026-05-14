@@ -1,7 +1,5 @@
 use std::env;
 
-/// Operator-level configuration loaded from environment variables.
-/// All fields have sensible defaults so the controller runs out of the box.
 pub struct Config {
     // --- Server ---
     pub port: u16,
@@ -13,21 +11,21 @@ pub struct Config {
     // --- Bin-packing ---
     pub max_sandboxes: usize,
 
-    // --- VM operator defaults (applied to every sandbox unless overridden per-request) ---
+    // --- Provider ---
+    /// Sandbox backend. Currently only "nsjail" is supported.
+    pub sandbox_provider: String,
 
-    /// Log verbosity for VM processes.
-    /// Values: "off", "error", "warn", "info", "debug", "trace". Default: "warn".
-    pub vm_log_level: String,
-
-    /// Metrics sampling interval in milliseconds. 0 = disabled. Default: 0.
-    pub vm_metrics_interval_ms: u64,
-
-    /// Override the libkrunfw shared library path. Empty = use microsandbox default.
-    pub libkrunfw_path: String,
-
-    /// Image pull policy for VM rootfs OCI images.
-    /// Values: "if_missing" (default), "always", "never".
-    pub vm_pull_policy: String,
+    // --- nsjail ---
+    /// Path to the nsjail binary. Default: /usr/sbin/nsjail.
+    pub nsjail_path: String,
+    /// Default rootfs for sandboxes (overlayfs lower dir).
+    /// Requests may override via vm.image (a local directory path).
+    pub nsjail_default_rootfs: String,
+    /// Directory where per-sandbox overlay work dirs are created.
+    pub nsjail_sandbox_root: String,
+    /// Host directory scanned for allowed_binaries. Each listed binary is bind-mounted
+    /// from here into /usr/local/bin/<name> inside the sandbox.
+    pub nsjail_binaries_dir: String,
 }
 
 impl Config {
@@ -39,10 +37,11 @@ impl Config {
             tls_key_path: env_str("BOXY_TLS_KEY_PATH", "/tls/tls.key"),
             tls_ca_path: env_str("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
             max_sandboxes: env_parse("BOXY_MAX_SANDBOXES", 20),
-            vm_log_level: env_str("BOXY_VM_LOG_LEVEL", "warn"),
-            vm_metrics_interval_ms: env_parse("BOXY_VM_METRICS_INTERVAL_MS", 0),
-            libkrunfw_path: env::var("BOXY_LIBKRUNFW_PATH").unwrap_or_default(),
-            vm_pull_policy: env_str("BOXY_VM_PULL_POLICY", "if_missing"),
+            sandbox_provider: env_str("BOXY_SANDBOX_PROVIDER", "nsjail"),
+            nsjail_path: env_str("BOXY_NSJAIL_PATH", "/usr/sbin/nsjail"),
+            nsjail_default_rootfs: env_str("BOXY_NSJAIL_ROOTFS", "/rootfs/ubuntu-24.04"),
+            nsjail_sandbox_root: env_str("BOXY_NSJAIL_SANDBOX_ROOT", "/var/lib/boxy/sandboxes"),
+            nsjail_binaries_dir: env_str("BOXY_NSJAIL_BINARIES_DIR", "/usr/local/bin"),
         }
     }
 }

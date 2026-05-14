@@ -5,18 +5,19 @@ use std::collections::HashMap;
 pub struct CreateSandboxRequest {
     pub sandbox_id: String,
     pub env: Option<HashMap<String, String>>,
+    /// Binaries to bind-mount from the host binaries directory into /usr/local/bin/<name>.
     pub allowed_binaries: Option<Vec<String>>,
     pub vm: Option<VmConfig>,
     pub network: Option<NetworkConfig>,
     pub volumes: Option<Vec<VolumeMount>>,
-    pub patches: Option<Vec<SandboxPatch>>,
     pub ttl_seconds: Option<u64>,
 }
 
 /// VM resource and runtime config (per-request overrides).
 #[derive(Debug, Clone, Deserialize)]
 pub struct VmConfig {
-    /// OCI image reference for the VM rootfs. Required.
+    /// For nsjail: path to the rootfs directory (e.g. "/rootfs/ubuntu-24.04").
+    /// If omitted, falls back to BOXY_NSJAIL_ROOTFS.
     pub image: Option<String>,
     pub memory_mb: Option<u32>,
     pub vcpus: Option<u8>,
@@ -27,30 +28,21 @@ pub struct VmConfig {
     pub max_duration_sec: Option<u64>,
     pub idle_timeout_sec: Option<u64>,
     pub rlimits: Option<Vec<VmRlimit>>,
-    pub scripts: Option<Vec<VmScript>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VmRlimit {
-    /// "nofile", "nproc", "memlock", "msgqueue", "sigpending", "nice", "rtprio", "rttime"
+    /// "nofile", "nproc", "as", "cpu", "fsize", "stack", "core"
     pub resource: String,
     pub soft: u64,
     pub hard: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct VmScript {
-    pub name: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct NetworkConfig {
     pub enabled: Option<bool>,
-    // Simple shortcuts
     pub allow_internet_access: Option<bool>,
     pub allowed_egress_domains: Option<Vec<String>>,
-    // Advanced
     pub rules: Option<Vec<NetworkRule>>,
     pub ports: Option<Vec<PortMapping>>,
     pub dns: Option<DnsConfig>,
@@ -61,9 +53,7 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkRule {
-    /// "egress", "ingress", or "any"
     pub direction: String,
-    /// "allow" or "deny"
     pub action: String,
     pub protocols: Option<Vec<String>>,
     pub ports: Option<Vec<u16>>,
@@ -71,7 +61,6 @@ pub struct NetworkRule {
     pub domains: Option<Vec<String>>,
     pub domain_suffixes: Option<Vec<String>>,
     pub cidrs: Option<Vec<String>>,
-    /// "public", "private", "loopback", "link_local", "metadata", "multicast", "host"
     pub groups: Option<Vec<String>>,
 }
 
@@ -108,25 +97,12 @@ pub struct NetworkSecret {
 #[derive(Debug, Clone, Deserialize)]
 pub struct VolumeMount {
     pub guest_path: String,
-    /// "bind", "named", or "tmpfs"
+    /// "bind", or "tmpfs"
     pub volume_type: String,
     pub host_path: Option<String>,
     pub name: Option<String>,
     pub size_mb: Option<u32>,
     pub readonly: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SandboxPatch {
-    /// "text", "bytes", "copy_file", "copy_dir", "symlink", "mkdir", "remove", "append"
-    pub patch_type: String,
-    pub path: String,
-    pub content: Option<String>,
-    pub bytes: Option<String>,
-    pub host_path: Option<String>,
-    pub target: Option<String>,
-    pub mode: Option<u32>,
-    pub replace: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

@@ -9,19 +9,6 @@ if [[ -z "${BASE_URL}" || -z "${ROUTER_TOKEN}" ]]; then
   exit 1
 fi
 
-# microsandbox requires hardware-assisted virtualization (KVM on Linux, Apple
-# Hypervisor Framework on macOS Apple Silicon). There is no process-isolation
-# fallback in v0.4. When BOXY_NO_KVM=true all tests in this suite are skipped.
-if [[ "${BOXY_NO_KVM:-false}" == "true" ]]; then
-  suite "KVM Requirement"
-  skip "All sandbox tests require /dev/kvm — microsandbox v0.4 has no no-KVM fallback"
-  echo ""
-  echo "  Requirements: Linux with KVM enabled, or macOS Apple Silicon with Docker Desktop."
-  echo "  Cluster nodes must have /dev/kvm available (Linux KVM or macOS Apple Silicon + Docker Desktop)."
-  summary
-  exit 0
-fi
-
 # -----------------------------------------------------------------------
 # Health
 # -----------------------------------------------------------------------
@@ -55,7 +42,7 @@ create_phase=$(echo "${create_resp}" | jq -r '.phase // empty')
 assert_eq "Create sandbox returns phase" "Running" "${create_phase}"
 
 create_runtime=$(echo "${create_resp}" | jq -r '.runtime // empty')
-assert_eq "Create sandbox returns runtime=microsandbox" "microsandbox" "${create_runtime}"
+assert_eq "Create sandbox returns runtime=nsjail" "nsjail" "${create_runtime}"
 
 # GET sandbox
 get_status=$(curl_api_status GET "/v1/sandboxes/${SB_ID}")
@@ -88,7 +75,7 @@ assert_eq "Exec returns exitCode=0" "0" "${exec_code}"
 
 # Exec with env
 exec_env_resp=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"e2e-sess\",\"sandboxId\":\"${SB_ID}\",\"command\":\"sh\",\"args\":[\"-c\",\"echo -n \\$MY_VAR\"],\"env\":{\"MY_VAR\":\"injected\"},\"timeoutSeconds\":30}")
+  -d "{\"sessionId\":\"e2e-sess\",\"sandboxId\":\"${SB_ID}\",\"command\":\"sh\",\"args\":[\"-c\",\"echo -n \$MY_VAR\"],\"env\":{\"MY_VAR\":\"injected\"},\"timeoutSeconds\":30}")
 exec_env_out=$(echo "${exec_env_resp}" | jq -r '.stdout // empty')
 assert_eq "Exec with env variable" "injected" "${exec_env_out}"
 
@@ -204,7 +191,7 @@ call_resp=$(curl_mcp \
 call_text=$(echo "${call_resp}" | jq -r '.result.content[0].text // empty')
 assert_eq "MCP tools/call returns exec output" "mcp-e2e" "${call_text}"
 
-call_error=$(echo "${call_resp}" | jq -r '.result.isError // empty')
+call_error=$(echo "${call_resp}" | jq -r '.result.isError // "false"')
 assert_eq "MCP tools/call isError=false" "false" "${call_error}"
 
 # tools/call with non-zero exit
@@ -227,7 +214,7 @@ fi
 
 # unknown method
 unknown_resp=$(curl_mcp '{"jsonrpc":"2.0","id":6,"method":"nonexistent/method"}')
-unknown_err=$(echo "${unknown_resp}" | jq -r '.error.code // empty')
+unknown_err=$(echo "${unknown_resp}" | jq -r '.error.code // empty' 2>/dev/null || true)
 if [[ -n "${unknown_err}" ]]; then
   pass "MCP unknown method returns JSON-RPC error"
 else

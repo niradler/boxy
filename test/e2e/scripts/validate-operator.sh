@@ -9,19 +9,6 @@ if [[ -z "${BASE_URL}" || -z "${ROUTER_TOKEN}" ]]; then
   exit 1
 fi
 
-# microsandbox requires hardware-assisted virtualization (KVM on Linux, Apple
-# Hypervisor Framework on macOS Apple Silicon). There is no process-isolation
-# fallback in v0.4. When BOXY_NO_KVM=true all tests in this suite are skipped.
-if [[ "${BOXY_NO_KVM:-false}" == "true" ]]; then
-  suite "KVM Requirement"
-  skip "All operator sandbox tests require /dev/kvm — microsandbox v0.4 has no no-KVM fallback"
-  echo ""
-  echo "  Requirements: Linux with KVM enabled, or macOS Apple Silicon with Docker Desktop."
-  echo "  Cluster nodes must have /dev/kvm available (Linux KVM or macOS Apple Silicon + Docker Desktop)."
-  summary
-  exit 0
-fi
-
 # -----------------------------------------------------------------------
 # CRD Lifecycle
 # -----------------------------------------------------------------------

@@ -430,7 +430,7 @@ func (s *Server) sandboxToResponse(sb *boxyv1.Sandbox) *api.SandboxResponseBody 
 		SandboxID: sb.Spec.SandboxID,
 		SessionID: sb.Spec.SessionID,
 		Owner:     sb.Spec.Owner,
-		Runtime:   "microsandbox",
+		Runtime:   "nsjail",
 		PodRef:    api.PodRef{Namespace: s.cfg.SandboxNamespace, Name: sb.Status.ControllerPod},
 		Phase:     phase,
 		Ready:     sb.Status.Phase == boxyv1.SandboxPhaseRunning,

@@ -43,33 +43,34 @@ spec:
             - name: BOXY_TLS_CA_PATH
               value: "/tls/ca.crt"
             - name: RUST_LOG
-              value: {{ .Values.vmLogLevel | default "warn" | quote }}
-            {{- if .Values.vmLogLevel }}
-            - name: BOXY_VM_LOG_LEVEL
-              value: {{ .Values.vmLogLevel | quote }}
-            {{- end }}
-            {{- if gt (int .Values.vmMetricsIntervalMs) 0 }}
-            - name: BOXY_VM_METRICS_INTERVAL_MS
-              value: {{ .Values.vmMetricsIntervalMs | quote }}
-            {{- end }}
-            {{- if .Values.vmPullPolicy }}
-            - name: BOXY_VM_PULL_POLICY
-              value: {{ .Values.vmPullPolicy | quote }}
-            {{- end }}
-            {{- if .Values.libkrunfwPath }}
-            - name: BOXY_LIBKRUNFW_PATH
-              value: {{ .Values.libkrunfwPath | quote }}
-            {{- end }}
+              value: {{ .Values.logLevel | default "warn" | quote }}
+            - name: BOXY_SANDBOX_PROVIDER
+              value: "nsjail"
+            - name: BOXY_NSJAIL_PATH
+              value: {{ .Values.nsjailPath | default "/usr/sbin/nsjail" | quote }}
+            - name: BOXY_NSJAIL_ROOTFS
+              value: {{ .Values.nsjailRootfs | default "/rootfs/ubuntu-24.04" | quote }}
+            - name: BOXY_NSJAIL_SANDBOX_ROOT
+              value: "/var/lib/boxy/sandboxes"
+            - name: BOXY_NSJAIL_BINARIES_DIR
+              value: {{ .Values.nsjailBinariesDir | default "/usr/local/bin" | quote }}
           {{- with .Values.resourcesController }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           securityContext:
             runAsNonRoot: false
-            allowPrivilegeEscalation: true
-            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+              # SYS_ADMIN: overlayfs mount/umount per sandbox.
+              # SETUID/SETGID: nsjail user mapping.
+              # NET_ADMIN: network namespace setup.
+              # SYS_CHROOT: chroot into overlay merged dir.
+              # MKNOD: create device nodes inside sandbox.
+              # SETPCAP: required by nsjail to set securebits (PR_SET_SECUREBITS).
+              add: ["SYS_ADMIN", "SETUID", "SETGID", "NET_ADMIN", "SYS_CHROOT", "MKNOD", "SETPCAP"]
           {{- if .Values.mtlsDisabled }}
           readinessProbe:
             httpGet:
@@ -102,18 +103,18 @@ spec:
             failureThreshold: 6
           {{- end }}
           volumeMounts:
-            - name: dev-kvm
-              mountPath: /dev/kvm
+            - name: sandbox-root
+              mountPath: /var/lib/boxy/sandboxes
             {{- if not .Values.mtlsDisabled }}
             - name: tls
               mountPath: /tls
               readOnly: true
             {{- end }}
       volumes:
-        - name: dev-kvm
-          hostPath:
-            path: /dev/kvm
-            type: CharDevice
+        # Per-sandbox overlayfs dirs are created here.
+        # emptyDir is wiped on pod restart (acceptable since sandbox state is in-memory).
+        - name: sandbox-root
+          emptyDir: {}
         {{- if not .Values.mtlsDisabled }}
         - name: tls
           secret:

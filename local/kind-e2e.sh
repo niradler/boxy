@@ -21,42 +21,6 @@ fi
 kubectl cluster-info --context "${CTX}"
 
 # -----------------------------------------------------------------------
-# 2. KVM detection (probe inside kind node, not host)
-#
-# microsandbox requires hardware-assisted virtualization:
-#   - Linux: /dev/kvm  (KVM module)
-#   - macOS Apple Silicon: Apple Hypervisor Framework (Docker Desktop exposes
-#     /dev/kvm inside its Linux VM, so the same check applies here)
-#
-# If /dev/kvm is not present inside the kind node:
-#   - the api and operator suites are skipped automatically
-#   - api and operator suites are skipped automatically
-#   - infra, security, and config suites still run
-# -----------------------------------------------------------------------
-
-KVM_AVAILABLE=false
-KIND_NODE="$(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null | head -1 || true)"
-if [[ -n "${KIND_NODE}" ]] && docker exec "${KIND_NODE}" test -c /dev/kvm 2>/dev/null; then
-  KVM_AVAILABLE=true
-fi
-
-if [[ "${KVM_AVAILABLE}" == "true" ]]; then
-  echo ">>> /dev/kvm found inside kind node '${KIND_NODE}' — all suites will run"
-else
-  SKIP_SUITES="${SKIP_SUITES:+${SKIP_SUITES},}api,operator"
-  echo ""
-  echo ">>> WARNING: /dev/kvm not available inside kind node"
-  echo ">>>   microsandbox requires KVM (Linux) or Apple Hypervisor Framework (macOS Apple Silicon)"
-  echo ">>>   — no process-isolation fallback exists in microsandbox v0.4"
-  echo ">>>   Skipping api and operator suites; infra/security/config will still run."
-  echo ">>>   To run all suites, use a Linux host with KVM enabled, or macOS Apple Silicon"
-  echo ">>>   with Docker Desktop (which exposes /dev/kvm inside containers)."
-  echo ""
-fi
-
-export SKIP_SUITES
-
-# -----------------------------------------------------------------------
 # 3. Build and load images
 # -----------------------------------------------------------------------
 
@@ -126,8 +90,6 @@ export NAMESPACE RELEASE_NAME ROUTER_TOKEN
 export BASE_URL="${BASE}"
 export KUBECTL_CTX="${CTX}"
 export CHART_DIR="deploy/helm/boxy"
-export BOXY_NO_KVM
-BOXY_NO_KVM="$([[ "${KVM_AVAILABLE}" == "true" ]] && echo false || echo true)"
 
 echo ""
 echo ">>> Running e2e validation suite"
@@ -137,16 +99,11 @@ bash test/e2e/scripts/run-all.sh
 # 8. Run Go e2e tests
 # -----------------------------------------------------------------------
 
-if [[ "${KVM_AVAILABLE}" == "true" ]]; then
-  echo ""
-  echo ">>> Running Go e2e tests"
-  export BOXY_E2E_BASE_URL="${BASE}"
-  export BOXY_E2E_ROUTER_TOKEN="${ROUTER_TOKEN}"
-  go test -v -count=1 -tags=e2e ./test/e2e/... -timeout=15m
-else
-  echo ""
-  echo ">>> Skipping Go e2e tests (no /dev/kvm — sandbox creation requires KVM)"
-fi
+echo ""
+echo ">>> Running Go e2e tests"
+export BOXY_E2E_BASE_URL="${BASE}"
+export BOXY_E2E_ROUTER_TOKEN="${ROUTER_TOKEN}"
+go test -v -count=1 -tags=e2e ./test/e2e/... -timeout=15m
 
 echo ""
 echo ">>> e2e run complete"

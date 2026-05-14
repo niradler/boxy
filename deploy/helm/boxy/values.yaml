@@ -26,7 +26,7 @@ resourcesRouter:
 
 routerServiceAccount: boxy-router
 
-# --- Microsandbox controller (StatefulSet) ---
+# --- nsjail controller (StatefulSet) ---
 controllerImage: boxy-controller:e2e
 controllerPort: 8080
 controllerReplicas: 1
@@ -48,14 +48,16 @@ mtlsServerCN: "boxy-controller"
 mtlsClientCN: "boxy-router"
 
 # K8s NetworkPolicy applied to controller pods (default-deny egress).
-# Fine-grained per-sandbox network policy is enforced inside the VM by microsandbox.
+# Per-sandbox network isolation is enforced by nsjail network namespaces.
 enableSandboxNetworkPolicy: true
 
-# VM operator defaults (env vars on the controller pod).
-vmLogLevel: "warn"             # off | error | warn | info | debug | trace
-vmMetricsIntervalMs: 0         # 0 = disabled
-vmPullPolicy: "if_missing"     # if_missing | always | never
-libkrunfwPath: ""              # empty = microsandbox default
+# Controller log level (RUST_LOG).
+logLevel: "warn"               # off | error | warn | info | debug | trace
+
+# nsjail config (env vars on the controller pod).
+nsjailPath: "/usr/sbin/nsjail"
+nsjailRootfs: "/rootfs/ubuntu-24.04"
+nsjailBinariesDir: "/usr/local/bin"
 
 # --- Default sandbox (for MCP clients that don't specify X-Sandbox-Id) ---
 defaultSandbox:
@@ -75,12 +77,10 @@ defaultSandbox:
     allowInternetAccess: false
     allowedEgressDomains: []
   volumes: []
-  patches: []
 
-# The controller pod always mounts /dev/kvm via hostPath and runs privileged.
-# microsandbox requires hardware-assisted virtualization (KVM on Linux, Apple
-# Hypervisor Framework on macOS Apple Silicon) — there is no fallback.
-# Cluster nodes must have /dev/kvm available.
+# The controller pod requires CAP_SYS_ADMIN for overlayfs per-sandbox filesystem
+# isolation. No hardware dependency — overlayfs is a standard kernel feature
+# available on all Linux systems. Set in the pod securityContext (see template).
 
 # --- Sandbox Operator ---
 imageOperator: boxy-operator:e2e

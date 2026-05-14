@@ -58,6 +58,9 @@ ctrl_ctr=$(echo "${ctrl_spec}" | jq '.spec.template.spec.containers[0].securityC
 ctrl_caps=$(echo "${ctrl_ctr}" | jq -r '.capabilities.drop[0] // empty')
 assert_eq "Controller container drops ALL capabilities" "ALL" "${ctrl_caps}"
 
+ctrl_sys_admin=$(echo "${ctrl_ctr}" | jq -r '[.capabilities.add[]? | select(. == "SYS_ADMIN")] | length')
+assert_gt "Controller container adds SYS_ADMIN (overlayfs)" "${ctrl_sys_admin}" 0
+
 ctrl_automount=$(echo "${ctrl_spec}" | jq -r '.spec.template.spec.automountServiceAccountToken // "false"')
 assert_eq "Controller pod automountServiceAccountToken=false" "false" "${ctrl_automount}"
 

@@ -9,7 +9,7 @@ use tracing::info;
 use crate::{
     config::Config,
     error::AppError,
-    sandbox_mgr::SandboxManager,
+    providers::{build_adapter, SandboxAdapter},
     tls::build_tls_config,
     types::{
         CreateSandboxRequest, CreateSandboxResponse, DeleteSandboxRequest, ExecRequest,
@@ -19,7 +19,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
-    pub mgr: Arc<SandboxManager>,
+    pub mgr: Arc<dyn SandboxAdapter>,
     pub max_sandboxes: usize,
 }
 
@@ -67,8 +67,10 @@ async fn list_sandboxes(State(state): State<AppState>) -> Json<ListSandboxesResp
 }
 
 pub async fn serve(cfg: Config) {
+    let mgr = build_adapter(&cfg).expect("failed to initialize sandbox provider");
+
     let state = AppState {
-        mgr: Arc::new(SandboxManager::new("/usr/local/bin", &cfg)),
+        mgr,
         max_sandboxes: cfg.max_sandboxes,
     };
 
@@ -83,14 +85,14 @@ pub async fn serve(cfg: Config) {
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.port));
 
     if cfg.mtls_disabled {
-        info!("mTLS DISABLED -- listening plain HTTP on {}", addr);
+        info!(provider = %cfg.sandbox_provider, "mTLS DISABLED -- listening plain HTTP on {addr}");
         axum_server::bind(addr)
             .serve(app.into_make_service())
             .await
             .expect("server error");
     } else {
         let tls_cfg = build_tls_config(&cfg).await;
-        info!("mTLS enabled -- listening HTTPS on {}", addr);
+        info!(provider = %cfg.sandbox_provider, "mTLS enabled -- listening HTTPS on {addr}");
         axum_server::bind_rustls(addr, tls_cfg)
             .serve(app.into_make_service())
             .await

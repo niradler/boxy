@@ -248,6 +248,8 @@ Set `sandboxNamespace` when sandboxes should live outside the release namespace.
 
 microsandbox (the VM engine used by boxy-controller) requires hardware-assisted virtualization. **There is no process-isolation fallback in v0.4.**
 
+Future versions may add process-isolation support via [bubblewrap](https://github.com/containers/bubblewrap).
+
 | Platform | Requirement |
 | -------- | ----------- |
 | Linux | KVM kernel module enabled; `/dev/kvm` accessible inside the controller pod |
