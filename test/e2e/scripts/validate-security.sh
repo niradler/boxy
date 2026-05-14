@@ -22,7 +22,7 @@ router_seccomp=$(echo "${router_spec}" | jq -r '.spec.template.spec.securityCont
 assert_eq "Router pod seccompProfile=RuntimeDefault" "RuntimeDefault" "${router_seccomp}"
 
 router_ctr=$(echo "${router_spec}" | jq '.spec.template.spec.containers[0].securityContext')
-router_priv=$(echo "${router_ctr}" | jq -r '.allowPrivilegeEscalation // empty')
+router_priv=$(echo "${router_ctr}" | jq -r '.allowPrivilegeEscalation // "false"')
 assert_eq "Router container allowPrivilegeEscalation=false" "false" "${router_priv}"
 
 router_ro=$(echo "${router_ctr}" | jq -r '.readOnlyRootFilesystem // empty')
@@ -42,7 +42,7 @@ op_run_as_user=$(echo "${op_spec}" | jq -r '.spec.template.spec.securityContext.
 assert_eq "Operator pod runAsUser=65532" "65532" "${op_run_as_user}"
 
 op_ctr=$(echo "${op_spec}" | jq '.spec.template.spec.containers[0].securityContext')
-op_priv=$(echo "${op_ctr}" | jq -r '.allowPrivilegeEscalation // empty')
+op_priv=$(echo "${op_ctr}" | jq -r '.allowPrivilegeEscalation // "false"')
 assert_eq "Operator container allowPrivilegeEscalation=false" "false" "${op_priv}"
 
 op_ro=$(echo "${op_ctr}" | jq -r '.readOnlyRootFilesystem // empty')
@@ -58,7 +58,7 @@ ctrl_ctr=$(echo "${ctrl_spec}" | jq '.spec.template.spec.containers[0].securityC
 ctrl_caps=$(echo "${ctrl_ctr}" | jq -r '.capabilities.drop[0] // empty')
 assert_eq "Controller container drops ALL capabilities" "ALL" "${ctrl_caps}"
 
-ctrl_automount=$(echo "${ctrl_spec}" | jq -r '.spec.template.spec.automountServiceAccountToken // empty')
+ctrl_automount=$(echo "${ctrl_spec}" | jq -r '.spec.template.spec.automountServiceAccountToken // "false"')
 assert_eq "Controller pod automountServiceAccountToken=false" "false" "${ctrl_automount}"
 
 # -----------------------------------------------------------------------

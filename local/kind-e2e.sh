@@ -51,7 +51,7 @@ helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   --set controllerReplicas=1 \
   --set "routerToken=${ROUTER_TOKEN}" \
   --set mtlsDisabled=true \
-  --set kvmMode=hostpath \
+  --set kvmMode=none \
   --set defaultSandbox.enabled=false \
   --kube-context "${CTX}"
 

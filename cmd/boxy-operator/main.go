@@ -11,7 +11,9 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	boxyv1 "boxy.dev/boxy/api/v1alpha1"
 	ctrlclient "boxy.dev/boxy/internal/controller"
@@ -23,6 +25,8 @@ func main() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(boxyv1.AddToScheme(scheme))
 
+	ctrl.SetLogger(zap.New())
+
 	ns := envStr("BOXY_NAMESPACE", "default")
 	stsName := envStr("BOXY_CONTROLLER_STATEFULSET_NAME", "boxy-ctrl")
 	headlessSvc := envStr("BOXY_CONTROLLER_HEADLESS_SERVICE", stsName+"-headless")
@@ -31,7 +35,11 @@ func main() {
 		Scheme:                 scheme,
 		LeaderElection:         true,
 		LeaderElectionID:       "boxy-operator-leader",
+		LeaderElectionNamespace: ns,
 		HealthProbeBindAddress: ":8081",
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{ns: {}},
+		},
 	})
 	if err != nil {
 		slog.Error("unable to start manager", "err", err)
