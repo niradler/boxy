@@ -1,3 +1,6 @@
+{{- if not (has .Values.kvmMode (list "device" "hostpath")) }}
+  {{- fail "kvmMode must be 'device' or 'hostpath' — microsandbox requires KVM access, there is no no-KVM fallback" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

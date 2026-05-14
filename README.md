@@ -245,6 +245,25 @@ helm upgrade --install boxy ./deploy/helm/boxy -n boxy --create-namespace \
 
 Set `sandboxNamespace` when sandboxes should live outside the release namespace. Set `kvmMode: hostpath` for kind clusters without a KVM device plugin.
 
+## KVM requirements
+
+microsandbox (the VM engine used by boxy-controller) requires hardware-assisted virtualization. **There is no process-isolation fallback in v0.4.**
+
+| Platform | Requirement |
+| -------- | ----------- |
+| Linux | KVM kernel module enabled; `/dev/kvm` accessible inside the controller pod |
+| macOS Apple Silicon | Apple Hypervisor Framework — Docker Desktop on M-series Macs exposes `/dev/kvm` inside containers automatically |
+| x86 cloud VMs | Nested virtualization must be enabled on the host hypervisor (AWS: metal instances or `--cpu-options AmdSevSnp=enabled`; GCP: enable nested virt on the instance; Azure: `Standard_D*v5` or `E*v5` VMs) |
+
+**Set `kvmMode` in Helm values** — controls how the controller pod gets `/dev/kvm`, not whether it needs it:
+
+| Mode | When to use |
+| ---- | ----------- |
+| `device` (default) | Production; requires KubeVirt or a KVM device plugin on cluster nodes |
+| `hostpath` | kind clusters and bare-metal without a device plugin; needs privileged namespace |
+
+The e2e scripts detect `/dev/kvm` inside kind nodes automatically. When KVM is unavailable the `api` and `operator` suites are skipped with a clear message rather than hanging.
+
 ## E2E tests
 
 Requires `BOXY_E2E_BASE_URL` and `BOXY_E2E_ROUTER_TOKEN` env vars pointing at a running cluster.

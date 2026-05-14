@@ -21,7 +21,46 @@ fi
 kubectl cluster-info --context "${CTX}"
 
 # -----------------------------------------------------------------------
-# 2. Build and load images
+# 2. KVM detection (probe inside kind node, not host)
+#
+# microsandbox requires hardware-assisted virtualization:
+#   - Linux: /dev/kvm  (KVM module)
+#   - macOS Apple Silicon: Apple Hypervisor Framework (Docker Desktop exposes
+#     /dev/kvm inside its Linux VM, so the same check applies here)
+#
+# If /dev/kvm is not present inside the kind node:
+#   - kvmMode=none is used (controller starts but sandbox create/exec fail)
+#   - api and operator suites are skipped automatically
+#   - infra, security, and config suites still run
+# -----------------------------------------------------------------------
+
+KVM_AVAILABLE=false
+KIND_NODE="$(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null | head -1 || true)"
+if [[ -n "${KIND_NODE}" ]] && docker exec "${KIND_NODE}" test -c /dev/kvm 2>/dev/null; then
+  KVM_AVAILABLE=true
+fi
+
+if [[ "${KVM_AVAILABLE}" == "true" ]]; then
+  KVM_MODE="hostpath"
+  echo ">>> /dev/kvm found inside kind node '${KIND_NODE}' — sandbox suites enabled (kvmMode=hostpath)"
+else
+  KVM_MODE="none"
+  # Append api,operator to any caller-supplied SKIP_SUITES.
+  SKIP_SUITES="${SKIP_SUITES:+${SKIP_SUITES},}api,operator"
+  echo ""
+  echo ">>> WARNING: /dev/kvm not available inside kind node"
+  echo ">>>   microsandbox requires KVM (Linux) or Apple Hypervisor Framework (macOS Apple Silicon)"
+  echo ">>>   — no process-isolation fallback exists in microsandbox v0.4"
+  echo ">>>   Skipping api and operator suites; infra/security/config will still run."
+  echo ">>>   To run all suites, use a Linux host with KVM enabled, or macOS with Apple Silicon"
+  echo ">>>   and Docker Desktop (which exposes /dev/kvm inside containers)."
+  echo ""
+fi
+
+export SKIP_SUITES
+
+# -----------------------------------------------------------------------
+# 3. Build and load images
 # -----------------------------------------------------------------------
 
 echo ">>> Building images"
@@ -33,7 +72,7 @@ kind load docker-image "${IMAGE_REPO}/boxy-controller:${TAG}" --name "${CLUSTER_
 kind load docker-image "${IMAGE_REPO}/boxy-operator:${TAG}" --name "${CLUSTER_NAME}"
 
 # -----------------------------------------------------------------------
-# 3. Install CRD + Helm chart
+# 4. Install CRD + Helm chart
 # -----------------------------------------------------------------------
 
 ROUTER_TOKEN="$(openssl rand -hex 16)"
@@ -41,7 +80,7 @@ ROUTER_TOKEN="$(openssl rand -hex 16)"
 echo ">>> Installing CRD"
 kubectl --context "${CTX}" apply -f deploy/helm/boxy/crds/sandbox-crd.yaml
 
-echo ">>> Installing Helm chart"
+echo ">>> Installing Helm chart (kvmMode=${KVM_MODE})"
 helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   -n "${NAMESPACE}" --create-namespace \
   --set "imageRouter=${IMAGE_REPO}/boxy-router:${TAG}" \
@@ -51,12 +90,12 @@ helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   --set controllerReplicas=1 \
   --set "routerToken=${ROUTER_TOKEN}" \
   --set mtlsDisabled=true \
-  --set kvmMode=none \
+  --set "kvmMode=${KVM_MODE}" \
   --set defaultSandbox.enabled=false \
   --kube-context "${CTX}"
 
 # -----------------------------------------------------------------------
-# 4. Wait for rollout
+# 5. Wait for rollout
 # -----------------------------------------------------------------------
 
 echo ">>> Waiting for deployments"
@@ -68,7 +107,7 @@ echo ">>> Waiting for all pods ready"
 kubectl --context "${CTX}" -n "${NAMESPACE}" wait --for=condition=Ready pods --all --timeout=180s
 
 # -----------------------------------------------------------------------
-# 5. Port-forward
+# 6. Port-forward
 # -----------------------------------------------------------------------
 
 kubectl --context "${CTX}" -n "${NAMESPACE}" port-forward svc/${RELEASE_NAME}-router 18080:8080 &
@@ -84,27 +123,34 @@ done
 curl -fsS "${BASE}/healthz" | grep ok
 
 # -----------------------------------------------------------------------
-# 6. Run e2e validation scripts
+# 7. Run e2e validation scripts
 # -----------------------------------------------------------------------
 
 export NAMESPACE RELEASE_NAME ROUTER_TOKEN
 export BASE_URL="${BASE}"
 export KUBECTL_CTX="${CTX}"
 export CHART_DIR="deploy/helm/boxy"
+export BOXY_NO_KVM
+BOXY_NO_KVM="$([[ "${KVM_AVAILABLE}" == "true" ]] && echo false || echo true)"
 
 echo ""
 echo ">>> Running e2e validation suite"
 bash test/e2e/scripts/run-all.sh
 
 # -----------------------------------------------------------------------
-# 7. Run Go e2e tests
+# 8. Run Go e2e tests
 # -----------------------------------------------------------------------
 
-echo ""
-echo ">>> Running Go e2e tests"
-export BOXY_E2E_BASE_URL="${BASE}"
-export BOXY_E2E_ROUTER_TOKEN="${ROUTER_TOKEN}"
-go test -v -count=1 -tags=e2e ./test/e2e/... -timeout=15m
+if [[ "${KVM_AVAILABLE}" == "true" ]]; then
+  echo ""
+  echo ">>> Running Go e2e tests"
+  export BOXY_E2E_BASE_URL="${BASE}"
+  export BOXY_E2E_ROUTER_TOKEN="${ROUTER_TOKEN}"
+  go test -v -count=1 -tags=e2e ./test/e2e/... -timeout=15m
+else
+  echo ""
+  echo ">>> Skipping Go e2e tests (no /dev/kvm — sandbox creation requires KVM)"
+fi
 
 echo ""
-echo ">>> All e2e tests passed"
+echo ">>> e2e run complete"

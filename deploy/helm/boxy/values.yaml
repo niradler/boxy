@@ -77,11 +77,26 @@ defaultSandbox:
   volumes: []
   patches: []
 
-# How the controller pod accesses /dev/kvm.
-#   device   — request "devices.kubevirt.io/kvm: 1" (production: requires KubeVirt
-#              or a KVM device plugin installed on the cluster)
-#   hostpath — mount /dev/kvm via hostPath + run privileged (kind / clusters
-#              without a device plugin; requires PSA "privileged" on the namespace)
+# ---------------------------------------------------------------------------
+# KVM access mode (required — microsandbox has no no-KVM fallback)
+#
+# microsandbox requires hardware-assisted virtualization on every node that
+# runs a controller pod. Supported platforms:
+#   - Linux with KVM enabled (/dev/kvm)
+#   - macOS Apple Silicon: Docker Desktop exposes /dev/kvm inside containers
+#
+# kvmMode controls HOW the controller pod gets /dev/kvm — not whether it needs it.
+#
+#   device   — (default, production) Request "devices.kubevirt.io/kvm: 1"
+#              resource limit. Requires KubeVirt or a KVM device plugin on
+#              cluster nodes. Least-privileged option.
+#
+#   hostpath — Mount /dev/kvm via hostPath + run privileged. Use for kind
+#              clusters or bare-metal nodes without a KVM device plugin.
+#              Requires the namespace to allow privileged pods (PSA: privileged).
+#              local/kind-e2e.sh sets this automatically when /dev/kvm is
+#              detected inside the kind node.
+# ---------------------------------------------------------------------------
 kvmMode: "device"
 
 # --- Sandbox Operator ---
