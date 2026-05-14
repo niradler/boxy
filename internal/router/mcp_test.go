@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"strconv"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	kubefake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	boxyv1 "boxy.dev/boxy/api/v1alpha1"
@@ -37,7 +39,7 @@ func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, op
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).WithStatusSubresource(&boxyv1.Sandbox{}).Build()
 
 	cfg := Config{
-		AuthToken:        "test-token",
+		DevToken:         "test-token",
 		SandboxNamespace: "default",
 		MaxConcurrency:   10,
 		MaxBodyBytes:     1 << 20,
@@ -56,6 +58,7 @@ func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, op
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
 		k8sClient: fc,
 		k8sReader: fc,
+		auth:      newTokenReviewer(kubefake.NewSimpleClientset(), 30*time.Second, "test-token"),
 		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
 			MTLSDisabled: true,
 		}),

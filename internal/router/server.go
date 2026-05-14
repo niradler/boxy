@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -24,7 +25,8 @@ import (
 
 type Config struct {
 	ListenAddr       string
-	AuthToken        string
+	DevToken         string // optional static bypass for local dev / e2e; empty = K8s SA tokens only
+	AuthCacheTTL     time.Duration
 	SandboxNamespace string
 	MaxBodyBytes     int
 	MaxOutputBytes   int
@@ -83,17 +85,15 @@ func envStr(key, def string) string {
 }
 
 func ConfigFromEnv() (*Config, error) {
-	auth := strings.TrimSpace(os.Getenv("BOXY_ROUTER_TOKEN"))
-	if auth == "" {
-		return nil, fmt.Errorf("BOXY_ROUTER_TOKEN is required")
-	}
 	ns := strings.TrimSpace(os.Getenv("BOXY_SANDBOX_NAMESPACE"))
 	if ns == "" {
 		ns = metav1.NamespaceDefault
 	}
+	cacheTTL := time.Duration(envInt("BOXY_AUTH_CACHE_TTL_SECONDS", 30)) * time.Second
 	cfg := &Config{
 		ListenAddr:        strings.TrimSpace(os.Getenv("BOXY_LISTEN_ADDR")),
-		AuthToken:         auth,
+		DevToken:          strings.TrimSpace(os.Getenv("BOXY_ROUTER_TOKEN")), // optional static bypass
+		AuthCacheTTL:      cacheTTL,
 		SandboxNamespace:  ns,
 		MaxBodyBytes:      envInt("BOXY_MAX_BODY_BYTES", 1<<20),
 		MaxOutputBytes:    envInt("BOXY_MAX_OUTPUT_BYTES", 2<<20),
@@ -143,11 +143,16 @@ type Server struct {
 	k8sClient  client.Client
 	k8sReader  client.Reader
 	ctrlClient *ctrlclient.Client
+	auth       *tokenReviewer
 }
 
-func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader) *Server {
+func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader, cs kubernetes.Interface) *Server {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
+	}
+	ttl := cfg.AuthCacheTTL
+	if ttl <= 0 {
+		ttl = 30 * time.Second
 	}
 	return &Server{
 		cfg:       cfg,
@@ -155,6 +160,7 @@ func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader) *Se
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
 		k8sClient: k8sClient,
 		k8sReader: k8sReader,
+		auth:      newTokenReviewer(cs, ttl, cfg.DevToken),
 		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
 			MTLSDisabled: cfg.MTLSDisabled,
 			CACertPath:   cfg.TLSCAPath,
@@ -187,27 +193,49 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
+func (s *Server) extractBearer(r *http.Request) (string, bool) {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(h, prefix) {
+		return "", false
+	}
+	tok := strings.TrimSpace(h[len(prefix):])
+	return tok, tok != ""
+}
+
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get("Authorization")
-		const p = "Bearer "
-		if !strings.HasPrefix(h, p) || strings.TrimSpace(h[len(p):]) != s.cfg.AuthToken {
+		tok, ok := s.extractBearer(r)
+		if !ok {
 			s.jsonErr(w, http.StatusUnauthorized, "unauthorized", "")
 			return
 		}
-		next(w, r)
+		user, err := s.auth.authenticate(r.Context(), tok)
+		if err != nil {
+			s.log.Debug("auth failed", "err", err)
+			s.jsonErr(w, http.StatusUnauthorized, "unauthorized", "")
+			return
+		}
+		ctx := context.WithValue(r.Context(), authUserKey, user)
+		next(w, r.WithContext(ctx))
 	}
 }
 
 func (s *Server) withAuthHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get("Authorization")
-		const p = "Bearer "
-		if !strings.HasPrefix(h, p) || strings.TrimSpace(h[len(p):]) != s.cfg.AuthToken {
+		tok, ok := s.extractBearer(r)
+		if !ok {
 			s.jsonErr(w, http.StatusUnauthorized, "unauthorized", "")
 			return
 		}
-		next.ServeHTTP(w, r)
+		user, err := s.auth.authenticate(r.Context(), tok)
+		if err != nil {
+			s.log.Debug("auth failed", "err", err)
+			s.jsonErr(w, http.StatusUnauthorized, "unauthorized", "")
+			return
+		}
+		ctx := context.WithValue(r.Context(), authUserKey, user)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

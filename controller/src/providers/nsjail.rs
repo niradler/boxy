@@ -48,6 +48,96 @@ impl NsjailAdapter {
     }
 
     // -----------------------------------------------------------------------
+    // Input validation
+    // -----------------------------------------------------------------------
+
+    fn validate_create_request(&self, req: &CreateSandboxRequest) -> Result<(), AppError> {
+        // vm.image: must stay within the parent of the configured default rootfs.
+        // Prevents --chroot / or --chroot /etc attacks.
+        if let Some(vm) = &req.vm {
+            if let Some(image) = &vm.image {
+                if !image.is_empty() {
+                    let allowed_prefix = std::path::Path::new(&self.default_rootfs)
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("/rootfs"));
+                    let image_path = std::path::Path::new(image.as_str());
+                    if image.contains("..") || !image_path.starts_with(allowed_prefix) {
+                        return Err(AppError::BadRequest(format!(
+                            "vm.image must be under {}",
+                            allowed_prefix.display()
+                        )));
+                    }
+                }
+            }
+
+            // vm.user: disallow root to prevent running as real uid 0 inside the sandbox
+            // when --disable_clone_newuser is active (no uid remapping).
+            if let Some(user) = &vm.user {
+                if user == "root" || user == "0" {
+                    return Err(AppError::BadRequest(
+                        "vm.user 'root'/'0' is not permitted".into(),
+                    ));
+                }
+                // Reject any purely-numeric uid that resolves to 0.
+                if user.parse::<u64>() == Ok(0) {
+                    return Err(AppError::BadRequest(
+                        "vm.user uid 0 is not permitted".into(),
+                    ));
+                }
+            }
+
+            // vm.workdir: must be an absolute path with no .. traversal.
+            if let Some(workdir) = &vm.workdir {
+                if !workdir.starts_with('/') || workdir.contains("..") {
+                    return Err(AppError::BadRequest(
+                        "vm.workdir must be an absolute path without '..'".into(),
+                    ));
+                }
+            }
+
+            // vm.hostname: restrict to safe characters to prevent nsjail arg injection.
+            if let Some(hostname) = &vm.hostname {
+                if !hostname
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    || hostname.is_empty()
+                {
+                    return Err(AppError::BadRequest(
+                        "vm.hostname must contain only alphanumeric characters and hyphens".into(),
+                    ));
+                }
+            }
+        }
+
+        // allowed_binaries: each entry must be a plain filename (no path separators).
+        // Prevents ../../../etc/passwd from being bind-mounted into the sandbox.
+        for bin in req.allowed_binaries.iter().flatten() {
+            if bin.is_empty() || bin.contains('/') || bin.contains("..") {
+                return Err(AppError::BadRequest(format!(
+                    "allowed_binaries entry {bin:?} must be a plain filename with no path separators"
+                )));
+            }
+        }
+
+        // volumes.host_path: must be under the sandbox root directory.
+        // Prevents arbitrary host paths (e.g. /var/run/secrets/...) from being
+        // bind-mounted into the sandbox.
+        for vol in req.volumes.iter().flatten() {
+            if let Some(host_path) = &vol.host_path {
+                let sandbox_root = std::path::Path::new(&self.sandbox_root);
+                if host_path.contains("..") || !std::path::Path::new(host_path.as_str()).starts_with(sandbox_root) {
+                    return Err(AppError::BadRequest(format!(
+                        "volume host_path must be under {}",
+                        sandbox_root.display()
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // nsjail command builder
     // -----------------------------------------------------------------------
 
@@ -172,6 +262,7 @@ impl NsjailAdapter {
 #[async_trait]
 impl SandboxAdapter for NsjailAdapter {
     async fn create(&self, req: CreateSandboxRequest) -> Result<(), AppError> {
+        self.validate_create_request(&req)?;
         if self.sandboxes.contains_key(&req.sandbox_id) {
             return Err(AppError::AlreadyExists(req.sandbox_id));
         }

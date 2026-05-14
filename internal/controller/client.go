@@ -15,6 +15,10 @@ import (
 	"boxy.dev/boxy/internal/api"
 )
 
+// mtlsServerName is the CN expected in the controller's TLS certificate.
+// Must match deploy/helm/boxy/values.yaml mtlsServerCN.
+const mtlsServerName = "boxy-controller"
+
 type HTTPError struct {
 	Method string
 	URL    string
@@ -75,31 +79,14 @@ func buildMTLSTransport(cfg ClientConfig) http.RoundTripper {
 	if err != nil {
 		panic(fmt.Sprintf("load client keypair: %v", err))
 	}
+	// ServerName must match the CN in the controller's TLS certificate (mtlsServerCN).
+	// This ensures the router/operator only connects to genuine boxy-controller pods,
+	// not any other pod that happens to hold a CA-signed cert.
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
-			Certificates:       []tls.Certificate{cert},
-			InsecureSkipVerify: true,
-			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-				if len(rawCerts) == 0 {
-					return fmt.Errorf("no peer certificate presented")
-				}
-				peerCert, err := x509.ParseCertificate(rawCerts[0])
-				if err != nil {
-					return fmt.Errorf("parse peer cert: %w", err)
-				}
-				intermediates := x509.NewCertPool()
-				for _, raw := range rawCerts[1:] {
-					if c, err := x509.ParseCertificate(raw); err == nil {
-						intermediates.AddCert(c)
-					}
-				}
-				_, err = peerCert.Verify(x509.VerifyOptions{
-					Roots:         pool,
-					Intermediates: intermediates,
-					KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-				})
-				return err
-			},
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      pool,
+			ServerName:   mtlsServerName,
 		},
 	}
 }

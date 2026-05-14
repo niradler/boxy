@@ -33,6 +33,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	cs, err := router.BuildClientset()
+	if err != nil {
+		slog.Error("k8s clientset", "err", err)
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -49,7 +55,7 @@ func main() {
 	}
 	slog.Info("informer cache synced")
 
-	srv := router.NewServer(*cfg, k8sClient, k8sCache)
+	srv := router.NewServer(*cfg, k8sClient, k8sCache, cs)
 	mux := srv.Handler()
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,

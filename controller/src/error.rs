@@ -10,6 +10,8 @@ pub enum AppError {
     NotFound(String),
     #[error("sandbox already exists: {0}")]
     AlreadyExists(String),
+    #[error("invalid request: {0}")]
+    BadRequest(String),
     #[error("vm error: {0}")]
     Vm(String),
     #[error("exec timeout")]
@@ -23,6 +25,7 @@ impl IntoResponse for AppError {
         let (status, msg) = match &self {
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::AlreadyExists(_) => (StatusCode::CONFLICT, self.to_string()),
+            AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Timeout => (StatusCode::REQUEST_TIMEOUT, self.to_string()),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
