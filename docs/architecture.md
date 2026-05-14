@@ -14,8 +14,7 @@
 10. [Scaling & Performance](#10-scaling--performance)
 11. [Storage](#11-storage)
 12. [Failure Modes & Resilience](#12-failure-modes--resilience)
-13. [Key Trade-offs](#13-key-trade-offs)
-14. [Operational Runbook Sketch](#14-operational-runbook-sketch)
+13. [Operational Runbook Sketch](#13-operational-runbook-sketch)
 
 ---
 
@@ -27,23 +26,23 @@ Each sandbox is a lightweight **nsjail** process jail: isolated filesystem, netw
 
 The system is built in three tiers:
 
-| Tier | Language | Role |
-|------|----------|------|
-| Router | Go | Stateless HTTP frontend, auth, Kubernetes resource management |
-| Operator | Go | Kubernetes controller — sandbox lifecycle, bin-packing, auto-scaling |
-| Controller | Rust | Per-node nsjail daemon — runs actual sandboxes |
+| Tier       | Language | Role                                                                 |
+| ---------- | -------- | -------------------------------------------------------------------- |
+| Router     | Go       | Stateless HTTP frontend, auth, Kubernetes resource management        |
+| Operator   | Go       | Kubernetes controller — sandbox lifecycle, bin-packing, auto-scaling |
+| Controller | Rust     | Per-node nsjail daemon — runs actual sandboxes                       |
 
 ---
 
 ## 2. Use Cases
 
-| Use Case | Key Properties Needed |
-|----------|-----------------------|
+| Use Case                                | Key Properties Needed                                         |
+| --------------------------------------- | ------------------------------------------------------------- |
 | AI agent code execution (Claude, Codex) | Low-latency exec, stateful workspace per session, MCP support |
-| CI step isolation | File isolation between jobs, reproducible rootfs |
-| Multi-tenant interactive shells | Strong cross-tenant isolation, TTL enforcement |
-| Sandboxed script evaluation | Output capture, timeout enforcement, resource caps |
-| Secure API that runs user-supplied code | Input validation, network isolation, read-only OS |
+| CI step isolation                       | File isolation between jobs, reproducible rootfs              |
+| Multi-tenant interactive shells         | Strong cross-tenant isolation, TTL enforcement                |
+| Sandboxed script evaluation             | Output capture, timeout enforcement, resource caps            |
+| Secure API that runs user-supplied code | Input validation, network isolation, read-only OS             |
 
 ---
 
@@ -165,11 +164,11 @@ Floor: never go below BOXY_MIN_CONTROLLER_REPLICAS
 
 Written in Rust for low per-sandbox overhead. Exposes a small HTTP API (mTLS-only) consumed by the router and operator:
 
-| Endpoint | Method | Action |
-|----------|--------|--------|
-| `/v1/sandboxes` | POST | Create a new sandbox (mkdir workspace, validate config) |
-| `/v1/sandboxes/{id}/exec` | POST | Run a command in the sandbox via nsjail |
-| `/v1/sandboxes/{id}` | DELETE | Remove sandbox (kill processes, clean workspace) |
+| Endpoint                  | Method | Action                                                  |
+| ------------------------- | ------ | ------------------------------------------------------- |
+| `/v1/sandboxes`           | POST   | Create a new sandbox (mkdir workspace, validate config) |
+| `/v1/sandboxes/{id}/exec` | POST   | Run a command in the sandbox via nsjail                 |
+| `/v1/sandboxes/{id}`      | DELETE | Remove sandbox (kill processes, clean workspace)        |
 
 Internally, each sandbox is just a directory at `/var/lib/boxy/sandboxes/{id}/workspace`. When exec is called, the controller spawns nsjail with that directory bind-mounted as `/workspace` inside the jail.
 
@@ -301,12 +300,12 @@ nsjail
 
 ### What nsjail Does NOT Enforce
 
-| Feature | Status | Note |
-|---------|--------|------|
-| Network egress filtering (domain allowlists) | Not enforced | `allowedEgressDomains` parsed but nsjail has no firewall |
-| vCPU count limits | Not enforced | `vm.vcpus` accepted but ignored |
-| Per-exec workspace cleanup | N/A | `/workspace` is persistent by design; only `/tmp` is ephemeral |
-| Custom rootfs image pull | N/A | `vm.image` must be a pre-baked path on the node; no image fetch |
+| Feature                                      | Status       | Note                                                            |
+| -------------------------------------------- | ------------ | --------------------------------------------------------------- |
+| Network egress filtering (domain allowlists) | Not enforced | `allowedEgressDomains` parsed but nsjail has no firewall        |
+| vCPU count limits                            | Not enforced | `vm.vcpus` accepted but ignored                                 |
+| Per-exec workspace cleanup                   | N/A          | `/workspace` is persistent by design; only `/tmp` is ephemeral  |
+| Custom rootfs image pull                     | N/A          | `vm.image` must be a pre-baked path on the node; no image fetch |
 
 ---
 
@@ -336,6 +335,7 @@ External / Cluster Clients
 ### NetworkPolicy (controller pods)
 
 Default-deny all egress except:
+
 - Port 53 TCP/UDP (DNS)
 - Pod selector: `boxy-router` (responses to router-initiated connections)
 
@@ -343,10 +343,10 @@ Sandbox-level network isolation is enforced by nsjail (isolated network namespac
 
 ### Per-Sandbox Network Modes
 
-| `network.allowInternetAccess` | Behavior |
-|-------------------------------|----------|
-| `false` (default) | nsjail creates isolated network namespace — sandbox has no external connectivity |
-| `true` | `--disable_clone_newnet` — sandbox inherits the pod's host network |
+| `network.allowInternetAccess` | Behavior                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `false` (default)             | nsjail creates isolated network namespace — sandbox has no external connectivity |
+| `true`                        | `--disable_clone_newnet` — sandbox inherits the pod's host network               |
 
 ---
 
@@ -366,15 +366,15 @@ Operator ---(mTLS: client cert + CA pin)-----> Controller
 
 ### Input Validation
 
-| Input | Guard |
-|-------|-------|
-| `sandboxId` / `sessionId` / `owner` | Non-empty, required |
-| `ttlSeconds` | 0–604800 (7 days) |
-| `env` | Max 64 keys; blocked prefixes `KUBERNETES_*`, `BOXY_*`; values <= 16 KB |
-| `command` + `args` | Max 256 args |
-| `timeoutSeconds` | 1–3600 |
-| Request body | <= 1 MB |
-| Response output | <= 2 MB (truncated, not errored) |
+| Input                               | Guard                                                                   |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `sandboxId` / `sessionId` / `owner` | Non-empty, required                                                     |
+| `ttlSeconds`                        | 0–604800 (7 days)                                                       |
+| `env`                               | Max 64 keys; blocked prefixes `KUBERNETES_*`, `BOXY_*`; values <= 16 KB |
+| `command` + `args`                  | Max 256 args                                                            |
+| `timeoutSeconds`                    | 1–3600                                                                  |
+| Request body                        | <= 1 MB                                                                 |
+| Response output                     | <= 2 MB (truncated, not errored)                                        |
 
 ### Container Capabilities (controller pod)
 
@@ -389,16 +389,16 @@ The controller runs as root inside its container because nsjail needs `SYS_ADMIN
 
 ### Threat Model
 
-| Threat | Mitigation |
-|--------|-----------|
-| Unauthorized API access | Bearer token on router |
-| Router/operator impersonating each other toward controller | mTLS with shared CA |
-| Sandbox escaping to host filesystem | nsjail mount namespace + R/O rootfs; only `/workspace` and `/tmp` are writable |
-| Sandbox reaching other sandboxes over network | Isolated network namespace per sandbox |
-| Sandbox exhausting host memory | `--cgroup_mem_max` enforced by nsjail |
-| Sandbox running forever | `--time_limit` (nsjail SIGKILLs) + TTL sliding window (operator cleans up CR) |
-| Malicious env var injection | Blocked prefixes; max key/value caps |
-| Container breakout from controller | `allowPrivilegeEscalation: false`; caps minimal for nsjail only |
+| Threat                                                     | Mitigation                                                                     |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Unauthorized API access                                    | Bearer token on router                                                         |
+| Router/operator impersonating each other toward controller | mTLS with shared CA                                                            |
+| Sandbox escaping to host filesystem                        | nsjail mount namespace + R/O rootfs; only `/workspace` and `/tmp` are writable |
+| Sandbox reaching other sandboxes over network              | Isolated network namespace per sandbox                                         |
+| Sandbox exhausting host memory                             | `--cgroup_mem_max` enforced by nsjail                                          |
+| Sandbox running forever                                    | `--time_limit` (nsjail SIGKILLs) + TTL sliding window (operator cleans up CR)  |
+| Malicious env var injection                                | Blocked prefixes; max key/value caps                                           |
+| Container breakout from controller                         | `allowPrivilegeEscalation: false`; caps minimal for nsjail only                |
 
 **Known gaps:**
 
@@ -431,35 +431,35 @@ The controller runs as root inside its container because nsjail needs `SYS_ADMIN
 
 ### Latency Budget (typical exec)
 
-| Step | Latency |
-|------|---------|
-| Bearer token check + body parse | < 1 ms |
-| Kubernetes CR read (cached informer) | ~1 ms |
-| mTLS dial to controller (connection established) | ~1 ms |
-| nsjail spawn + exec (first exec in a sandbox) | 50–200 ms |
-| nsjail exec (warm sandbox, small command) | 10–50 ms |
-| K8s CR update (lastExecAt, async) | ~5 ms |
+| Step                                             | Latency   |
+| ------------------------------------------------ | --------- |
+| Bearer token check + body parse                  | < 1 ms    |
+| Kubernetes CR read (cached informer)             | ~1 ms     |
+| mTLS dial to controller (connection established) | ~1 ms     |
+| nsjail spawn + exec (first exec in a sandbox)    | 50–200 ms |
+| nsjail exec (warm sandbox, small command)        | 10–50 ms  |
+| K8s CR update (lastExecAt, async)                | ~5 ms     |
 
 The dominant cost is nsjail process spawn. Each exec is a cold spawn — there is no persistent shell process kept alive between calls.
 
 ### Sandbox Creation Latency
 
-| Step | Latency |
-|------|---------|
-| Kubernetes CR creation | ~10 ms |
-| Operator reconcile (Pending -> Creating -> Running) | 100 ms – 1 s |
-| Controller `POST /v1/sandboxes` (mkdir workspace) | < 10 ms |
-| Total (P50, no scale-up needed) | ~200 ms – 500 ms |
+| Step                                                | Latency          |
+| --------------------------------------------------- | ---------------- |
+| Kubernetes CR creation                              | ~10 ms           |
+| Operator reconcile (Pending -> Creating -> Running) | 100 ms – 1 s     |
+| Controller `POST /v1/sandboxes` (mkdir workspace)   | < 10 ms          |
+| Total (P50, no scale-up needed)                     | ~200 ms – 500 ms |
 
 Scale-up adds ~30 s (StatefulSet pod scheduling + image pull if not cached).
 
 ### Resource Footprint per Sandbox (at rest)
 
-| Resource | Amount |
-|----------|--------|
-| Kubernetes objects | 1 CR (~2 KB) |
-| Host filesystem | `/workspace` dir (empty until used) |
-| Memory (at rest) | 0 — no persistent process |
+| Resource             | Amount                                    |
+| -------------------- | ----------------------------------------- |
+| Kubernetes objects   | 1 CR (~2 KB)                              |
+| Host filesystem      | `/workspace` dir (empty until used)       |
+| Memory (at rest)     | 0 — no persistent process                 |
 | Memory (during exec) | Command RSS + nsjail overhead (~30–50 MB) |
 
 ---
@@ -492,54 +492,21 @@ Callers that need durable artifact storage should export files out of the sandbo
 
 ## 12. Failure Modes & Resilience
 
-| Failure | Behavior |
-|---------|---------|
-| Router pod restart | Stateless; new pod picks up from Kubernetes cache immediately |
-| Operator pod restart | New leader elected; reconciler re-drives all CRs from Kubernetes state |
-| Controller pod restart | Sandbox CR stays `Running`; next exec gets a stale-route error; router resets CR to `Pending`; operator reassigns to another pod (workspace lost) |
-| Controller pod rescheduled to new node | Same as restart; workspace dir on old node is orphaned (no automatic cleanup today) |
-| Kubernetes API server slow | Router times out waiting for sandbox `Running`; returns 504 to client |
-| nsjail OOM kill | Exec returns non-zero exit code + truncated stderr; not surfaced as a 5xx |
-| Exec timeout | nsjail SIGKILLs child; exec returns exit code 137 |
-| TTL expiry during active exec | Operator transitions sandbox to Deleting; in-flight exec may complete (nsjail process is unaffected by CR phase change) |
-| Network partition (router <-> controller) | Exec returns 502; no state corruption; retry-safe |
+| Failure                                   | Behavior                                                                                                                                          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Router pod restart                        | Stateless; new pod picks up from Kubernetes cache immediately                                                                                     |
+| Operator pod restart                      | New leader elected; reconciler re-drives all CRs from Kubernetes state                                                                            |
+| Controller pod restart                    | Sandbox CR stays `Running`; next exec gets a stale-route error; router resets CR to `Pending`; operator reassigns to another pod (workspace lost) |
+| Controller pod rescheduled to new node    | Same as restart; workspace dir on old node is orphaned (no automatic cleanup today)                                                               |
+| Kubernetes API server slow                | Router times out waiting for sandbox `Running`; returns 504 to client                                                                             |
+| nsjail OOM kill                           | Exec returns non-zero exit code + truncated stderr; not surfaced as a 5xx                                                                         |
+| Exec timeout                              | nsjail SIGKILLs child; exec returns exit code 137                                                                                                 |
+| TTL expiry during active exec             | Operator transitions sandbox to Deleting; in-flight exec may complete (nsjail process is unaffected by CR phase change)                           |
+| Network partition (router <-> controller) | Exec returns 502; no state corruption; retry-safe                                                                                                 |
 
 ---
 
-## 13. Key Trade-offs
-
-### nsjail vs. MicroVM (e.g. Firecracker)
-
-| Dimension | nsjail (current) | MicroVM |
-|-----------|------------------|---------|
-| Isolation strength | Kernel namespaces + cgroups; shared host kernel | Hardware virtualization; separate guest kernel |
-| Startup latency | ~50 ms | 100–300 ms |
-| Memory overhead | ~30–50 MB per exec | ~128 MB+ per VM |
-| KVM / hardware requirement | None (pure software) | `/dev/kvm` required |
-| Container escape risk | Kernel exploit -> host root | Hypervisor escape is harder |
-| Network egress filtering | No — needs external proxy | Can enforce at VM boundary |
-
-**Decision rationale:** nsjail was chosen for simplicity and universality — any standard Linux node works. Trade-off: weaker security boundary than hardware virtualization and no native egress enforcement.
-
-### StatefulSet for Controllers vs. Deployment
-
-A StatefulSet gives controllers **stable DNS names** (`boxy-ctrl-0.boxy-ctrl-headless.boxy.svc.cluster.local`), which allows the operator to dial a specific pod reliably even after restarts. A Deployment would require a per-pod Service or an alternative discovery mechanism. The trade-off is that StatefulSet scaling is ordinal and more conservative (pods created/deleted in order).
-
-### Single Bearer Token vs. Per-Caller RBAC
-
-A single token is simple to operate and integrate with AI clients. The trade-off is that all callers are equally trusted — one leaked token exposes all sandboxes. Adding per-caller RBAC would require a token registry and changes to the router auth middleware.
-
-### Bin-Packing vs. Round-Robin Assignment
-
-Bin-packing (filling pods to capacity before adding a new one) minimizes the number of controller pods running at any time, reducing cost. Round-robin would spread load more evenly but waste capacity on underutilized pods. Bin-packing is preferred when sandboxes are lightweight and controller pods are the scaling unit.
-
-### Cold Spawn per Exec vs. Persistent Shell
-
-Each exec spawns a fresh nsjail process. This simplifies the controller (no process lifecycle management) and ensures clean process isolation. Trade-off: ~50–200 ms spawn overhead per exec. A persistent shell process inside the jail would reduce latency but would require tracking shell state and handling shell death.
-
----
-
-## 14. Operational Runbook Sketch
+## 13. Operational Runbook Sketch
 
 ### Health Checks
 
@@ -559,13 +526,13 @@ kubectl get sandbox -n boxy -o wide | grep Creating
 
 ### Scale Tuning
 
-| Scenario | Knob |
-|----------|------|
-| Frequent "no capacity" requeues | Increase `BOXY_MAX_CONTROLLER_REPLICAS` |
-| Controller pods scaling up too eagerly | Increase `BOXY_MAX_SANDBOXES_PER_CONTROLLER` |
-| Idle pods staying up too long | Decrease `BOXY_SCALE_DOWN_COOLDOWN_SECONDS` |
-| Disk filling up on controller nodes | Lower `ttlSeconds`; check for zombie `Terminated` CRs |
-| High exec latency | Scale out router replicas; check controller pod CPU |
+| Scenario                               | Knob                                                  |
+| -------------------------------------- | ----------------------------------------------------- |
+| Frequent "no capacity" requeues        | Increase `BOXY_MAX_CONTROLLER_REPLICAS`               |
+| Controller pods scaling up too eagerly | Increase `BOXY_MAX_SANDBOXES_PER_CONTROLLER`          |
+| Idle pods staying up too long          | Decrease `BOXY_SCALE_DOWN_COOLDOWN_SECONDS`           |
+| Disk filling up on controller nodes    | Lower `ttlSeconds`; check for zombie `Terminated` CRs |
+| High exec latency                      | Scale out router replicas; check controller pod CPU   |
 
 ### Debug a Stuck Sandbox
 
