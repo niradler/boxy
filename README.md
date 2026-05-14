@@ -1,27 +1,34 @@
 # boxy
 
-`boxy` is a Kubernetes-native sandbox worker manager. A stateless HTTP **router** schedules and validates **sandbox worker pods**, then runs commands on an exact pod using either in-cluster HTTP (`api_exec`) or Kubernetes `pods/exec` (`pod_exec`). Each `POST /v1/exec` resolves the live pod by **`podRef` (namespace, name, uid)** or, if `podRef` is omitted or empty, by **`sandboxId` + `sessionId`** in `BOXY_SANDBOX_NAMESPACE` before validating labels, UID, and readiness. Services are not used for command delivery.
+`boxy` is a Kubernetes-native sandbox manager that runs isolated workloads inside lightweight **microsandbox KVM VMs**. A stateless Go **router** bin-packs sandboxes across dynamically created **controller pods** (Rust), each hosting multiple VMs via [microsandbox](https://github.com/nicholasgasior/microsandbox). Commands are executed inside VMs through `POST /v1/exec`.
 
-## Architecture (MVP)
+## Architecture
 
-| Layer | Responsibility |
-|------|------------------|
-| **boxy-router** | Authenticated HTTP API; creates/reads/deletes sandbox `Pod`s; resolves optional `podRef` or looks up pod by `sandboxId`/`sessionId`; validates UID + labels + phase; fans out exec (HTTP or SPDY exec); TTL/max-life reaper. |
-| **boxy-worker** | Container image running `boxy-worker` (HTTP `/v1/exec`) plus common CLIs; same image works under `kubectl exec`. |
+| Layer | Language | Responsibility |
+|-------|----------|----------------|
+| **boxy-router** | Go | Authenticated HTTP API; bin-packs sandboxes across controller pods; maintains a ConfigMap-backed routing store; self-healing sync reconciler; TTL reaper for both controller and worker pods. |
+| **boxy-controller** | Rust | Runs on a Kubernetes pod with `/dev/kvm` access; manages microsandbox VM lifecycle (create/exec/delete); exposes HTTP API over mTLS; each controller hosts up to `BOXY_MAX_SANDBOXES_PER_CONTROLLER` VMs. |
+| **boxy-worker** | Go | Container image with common CLIs; used for the simpler pod-based execution mode (`api_exec`/`pod_exec`) without VMs. |
 
-**Why this scales across replicas:** no in-memory session table. Every `POST /v1/exec` ends with a concrete `podRef`; the router verifies it against the API server (UID + `boxy.dev/*` labels + Ready) before contacting that pod’s IP or opening an SPDY exec stream.
+**How it works:**
 
-**Labels and annotations**
+1. Client calls `POST /v1/sandboxes` on the router.
+2. Router picks (or creates) a controller pod with available capacity (bin-packing).
+3. Router tells the controller to create a microsandbox VM.
+4. Router stores the route (`sandboxId` -> controller pod IP) in a ConfigMap.
+5. `POST /v1/exec` looks up the route, dials the controller over mTLS, executes inside the VM.
 
-- Labels: `boxy.dev/sandbox-id`, `boxy.dev/session-id`, `boxy.dev/owner`, `boxy.dev/managed-by=boxy`
-- Annotations: `boxy.dev/created-at`, optional `boxy.dev/ttl-seconds`, `boxy.dev/expires-at`, `boxy.dev/max-lifetime-seconds`
+**Self-healing:** A sync reconciler periodically fans out to all controller pods (`GET /v1/sandboxes`), rebuilds the routing store from ground truth, and invalidates stale routes. Triggered on startup, cache conflicts, parse errors, or stale-route detection during exec.
 
 ```
 Client --(Bearer)--> [boxy-router Deployment x N]
-                         |  GET/LIST Pod (optional resolve) + validate UID+labels
-                         |  api_exec -> http://podIP:workerPort/v1/exec (Bearer worker token)
+                         |  SelectOrCreateControllerPod (bin-pack)
+                         |  mTLS -> https://controllerPodIP:port/v1/...
                          v
-                   [Sandbox Pod: boxy-worker]
+                   [Controller Pod: boxy-controller]
+                         |  microsandbox SDK -> /dev/kvm
+                         v
+                   [MicroVM sandbox 1..N]
 ```
 
 ## API contract
@@ -32,77 +39,154 @@ Returns `200` with body `ok`.
 
 ### `POST /v1/exec`
 
-JSON body:
+Execute a command inside a sandbox VM.
 
 | Field | Type | Notes |
-|------|------|--------|
-| `sessionId` | string | Must match pod label `boxy.dev/session-id`. |
-| `sandboxId` | string | Must match pod label `boxy.dev/sandbox-id`. |
-| `podRef` | object | Optional. If `namespace`, `name`, and `uid` are all set, the router uses them directly. If all three are empty or omitted, the router lists pods with label `boxy.dev/sandbox-id` equal to `sandboxId` and picks the pod whose `boxy.dev/session-id` matches `sessionId` (then applies the same UID and label checks as explicit `podRef`). Partial `podRef` (only one or two fields) is rejected. |
-| `command` | string | Shell command segment (worker/router wrap for pod exec). |
+|-------|------|-------|
+| `sandboxId` | string | Required. Identifies the sandbox in the routing store. |
+| `sessionId` | string | Required. |
+| `command` | string | Shell command. |
 | `args` | string[] | |
-| `env` | map[string,string> | Injected safely for `pod_exec` via `/bin/sh -lc`; worker uses same wrapping. |
+| `env` | map[string,string] | Injected into the VM. |
 | `timeoutSeconds` | int | Hard cap from `BOXY_MAX_TIMEOUT_SECONDS`. |
-| `mode` | `api_exec` \| `pod_exec` | `api_exec` hits worker HTTP; `pod_exec` uses Kubernetes exec. |
-| `workerContainer` | string | Optional; default `worker`. |
 
-Response: `{ "exitCode", "stdout", "stderr" }`.
+Response: `{ "exitCode", "stdout", "stderr", "timedOut" }`.
 
 ### `POST /v1/sandboxes`
 
-Creates **or reuses** a sandbox pod keyed by `sandboxId` label (and checks `sessionId` / `owner` align on reuse).
+Create a sandbox VM on a controller pod.
 
-JSON (required): `sessionId`, `sandboxId`, `owner`.
+**Required:** `sessionId`, `sandboxId`, `owner`.
 
-JSON (optional provisioning): `ttlSeconds`, `maxLifetimeSeconds`, `image`, `workerPort`, `imagePullPolicy`, `imagePullSecretName`, `serviceAccountName`, `resources` (`cpuRequest`, `cpuLimit`, `memoryRequest`, `memoryLimit`), `env`, `labels`, `annotations`. Keys under `kubernetes.io/`, `k8s.io/`, or `boxy.dev/` are reserved. Env keys must not start with `BOXY_` (worker reserved). Values are capped by router env (see below).
+**Optional provisioning:**
 
-Response: `sandboxId`, `sessionId`, `owner`, `runtime`, `execApiPath`, `image`, `workerPort`, `podRef`, `phase`, `ready`.
+| Field | Type | Notes |
+|-------|------|-------|
+| `ttlSeconds` | int | Sandbox TTL. |
+| `maxLifetimeSeconds` | int | Hard lifetime cap. |
+| `image` | string | Base OCI image for the VM. |
+| `env` | map | Environment variables injected into the VM. |
+| `allowedBinaries` | string[] | CLI names (e.g. `"aws"`, `"curl"`) pre-installed in the controller image, injected into the VM. |
+| `vm` | object | VM configuration (see below). |
+| `network` | object | VM-level network policy (see below). |
+| `volumes` | array | Volume mounts inside the VM. |
+| `patches` | array | Filesystem modifications before VM startup. |
+| `labels` | map | Custom labels (reserved prefixes: `kubernetes.io/`, `k8s.io/`, `boxy.dev/`). |
+| `annotations` | map | Custom annotations (same reserved prefixes). |
+
+**`vm` object:**
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `memoryMb` | int | 512 | Guest RAM in MiB. |
+| `vcpus` | int | 1 | Virtual CPUs. |
+| `workdir` | string | | Working directory inside the VM. |
+| `shell` | string | | Default shell (e.g. `/bin/bash`). |
+| `hostname` | string | sandbox ID | Guest hostname. |
+| `user` | string | | Guest user identity. |
+| `maxDurationSec` | int | 0 | Hard VM lifetime cap. 0 = no limit. |
+| `idleTimeoutSec` | int | 0 | Kill VM after N seconds of no exec. 0 = no timeout. |
+| `rlimits` | array | | POSIX resource limits (`nofile`, `nproc`, `memlock`, etc.). |
+| `scripts` | array | | Named shell scripts placed at `/.msb/scripts/<name>`. |
+
+**`network` object:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `enabled` | bool | Default `true`. Toggle networking on/off. |
+| `allowInternetAccess` | bool | Unrestricted outbound. Overrides rules. |
+| `allowedEgressDomains` | string[] | Deny-all with exceptions (ignored if `allowInternetAccess` or `rules` set). |
+| `rules` | array | Full ordered firewall rules (first match wins). |
+| `ports` | array | Publish VM ports to the host (`hostPort`, `guestPort`, `protocol`). |
+| `dns` | object | Upstream resolvers, rebind protection, query timeout. |
+| `secrets` | array | Inject credentials into outbound HTTP by destination host. |
+| `maxConnections` | int | Default 256. Cap concurrent outbound connections. |
+| `trustHostCAs` | bool | Copy host root CA bundle into VM. |
+
+Response: `{ "sandboxId", "sessionId", "owner", "runtime", "image", "podRef", "phase", "ready" }`.
 
 ### `GET /v1/sandboxes/{sandboxId}`
 
-Status for the sandbox pod (first match in the sandbox namespace).
+Status for the sandbox (from the routing store).
 
 ### `DELETE /v1/sandboxes/{sandboxId}`
 
-Deletes sandbox pod(s) with that `sandboxId` label.
+Deletes the sandbox VM on its controller and removes the route.
 
 ## Security model
 
-- **Router auth:** `Authorization: Bearer <BOXY_ROUTER_TOKEN>` on every mutating route (and exec/sandbox routes).
-- **Worker auth:** router calls worker with `Authorization: Bearer <BOXY_WORKER_TOKEN>`; worker rejects missing/invalid tokens.
-- **No trust in IDs:** `sessionId` / `sandboxId` / `podRef.name` alone are not sufficient; the router loads the live pod and checks **UID** and labels before exec. Omitted `podRef` still ends in a full live lookup and the same checks.
-- **Limits:** request body max (`BOXY_MAX_BODY_BYTES`), output max (`BOXY_MAX_OUTPUT_BYTES`), per-request timeout max, concurrency semaphore (`BOXY_MAX_CONCURRENCY`), arg/env cardinality caps.
-- **Pod hardening (worker):** non-root (65532), `allowPrivilegeEscalation: false`, `capabilities.drop: ALL`, `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem` with `emptyDir` `/tmp`, worker `ServiceAccount` defaults to `automountServiceAccountToken: false` (enable only if you intentionally need in-cluster Kubernetes API access from the sandbox).
-- **RBAC:** router receives only `pods` + `pods/exec` + `pods/log` verbs within the sandbox namespace (Helm chart + `deploy/manifests/rbac.yaml` example).
-
-Secrets belong in Kubernetes `Secret` objects or external secret managers—never in images.
+- **Router auth:** `Authorization: Bearer <BOXY_ROUTER_TOKEN>` on every route.
+- **Router-to-controller:** mutual TLS with CA pinning (no hostname verification — controllers are dialed by ephemeral pod IP). Disable with `BOXY_MTLS_DISABLED=true` for local dev.
+- **Helm auto-generated certs:** The Helm chart creates a CA plus server/client certs in Kubernetes Secrets.
+- **NetworkPolicy:** Default-deny egress on controller pods (DNS + router allowed). Per-sandbox network rules enforced inside the VM by microsandbox.
+- **Limits:** request body max, output max, per-request timeout, concurrency semaphore, arg/env cardinality caps, max sandboxes per controller.
+- **KVM isolation:** Each sandbox runs in a lightweight KVM VM, providing hardware-level isolation.
+- **Controller image:** Runs as root (needs `/dev/kvm`). Kubernetes SecurityContext drops capabilities. CLIs available for injection: `curl`, `bash`, `python3`, AWS CLI v2.
 
 ## Configuration (router env)
 
-| Variable | Meaning |
-|---------|---------|
-| `BOXY_ROUTER_TOKEN` | Required bearer token for clients. |
-| `BOXY_WORKER_TOKEN` | Shared secret router→worker (`api_exec`). Injected into created sandbox pods. |
-| `BOXY_SANDBOX_NAMESPACE` | Namespace for sandbox pods. |
-| `BOXY_WORKER_IMAGE` | Image for new sandbox pods. |
-| `BOXY_WORKER_SERVICE_ACCOUNT` | SA name mounted by worker pods. |
-| `BOXY_WORKER_PORT` | Worker HTTP port (default `8080`). |
-| `BOXY_WORKER_CPU` / `BOXY_WORKER_MEMORY` | Optional requests/limits on sandbox pods. |
-| `BOXY_IMAGE_PULL_SECRET` | Optional default `imagePullSecrets` name on created sandboxes (and allowlist default). |
-| `BOXY_ALLOWED_SERVICE_ACCOUNTS` | Comma-separated extra service account names allowed in `serviceAccountName` (always includes `BOXY_WORKER_SERVICE_ACCOUNT`). |
-| `BOXY_ALLOWED_PULL_SECRETS` | Comma-separated extra pull secret names allowed in `imagePullSecretName` (includes `BOXY_IMAGE_PULL_SECRET` when set). |
-| `BOXY_MAX_SANDBOX_ENV_KEYS` / `BOXY_MAX_SANDBOX_LABELS` / `BOXY_MAX_SANDBOX_ANNOTATIONS` | Caps on per-sandbox maps (defaults `32` / `16` / `32`). |
-| `BOXY_MAX_IMAGE_REF_BYTES` | Max length of custom `image` string (default `512`). |
-| `BOXY_MIN_WORKER_PORT` / `BOXY_MAX_WORKER_PORT` | Allowed range for optional `workerPort` (defaults `1`–`65535`). |
-| `BOXY_MAX_SANDBOX_CPU` / `BOXY_MAX_SANDBOX_MEMORY` | Optional upper bounds for sandbox container resources (Kubernetes quantity strings). |
-| `BOXY_MAX_SANDBOX_TTL_SECONDS` / `BOXY_MAX_SANDBOX_LIFETIME_SECONDS` | Upper bounds for `ttlSeconds` and `maxLifetimeSeconds`. |
-| `BOXY_LISTEN_ADDR` | Default `:8080`. |
-| `BOXY_MAX_BODY_BYTES` | Default `1048576`. |
-| `BOXY_MAX_OUTPUT_BYTES` | Default `2097152`. |
-| `BOXY_MAX_TIMEOUT_SECONDS` | Default `3600`. |
-| `BOXY_MAX_CONCURRENCY` | Default `100` concurrent execs per replica. |
-| `BOXY_MAX_ARGS` / `BOXY_MAX_ENV_KEYS` | Validation caps on exec requests. |
-| `BOXY_REAPER_INTERVAL_SECONDS` | Default `30`. |
+### Core
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BOXY_ROUTER_TOKEN` | — | Required. Bearer token for clients. |
+| `BOXY_WORKER_TOKEN` | — | Required. Shared secret for worker pods (legacy mode). |
+| `BOXY_SANDBOX_NAMESPACE` | `default` | Namespace for controller and sandbox pods. |
+| `BOXY_WORKER_IMAGE` | — | Required. Image for worker pods (legacy mode). |
+| `BOXY_LISTEN_ADDR` | `:8080` | |
+| `BOXY_MAX_BODY_BYTES` | `1048576` | |
+| `BOXY_MAX_OUTPUT_BYTES` | `2097152` | |
+| `BOXY_MAX_TIMEOUT_SECONDS` | `3600` | |
+| `BOXY_MAX_CONCURRENCY` | `100` | Concurrent execs per router replica. |
+| `BOXY_MAX_ARGS` | `256` | |
+| `BOXY_MAX_ENV_KEYS` | `64` | |
+| `BOXY_REAPER_INTERVAL_SECONDS` | `30` | |
+
+### Controller / bin-packing
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BOXY_CONTROLLER_IMAGE` | — | Controller pod image. |
+| `BOXY_CONTROLLER_PORT` | `8080` | |
+| `BOXY_CONTROLLER_TTL_SECONDS` | `3600` | Auto-refreshed on each operation. |
+| `BOXY_MAX_SANDBOXES_PER_CONTROLLER` | `20` | VMs per controller pod. |
+| `BOXY_CONTROLLER_SERVICE_ACCOUNT` | `""` | |
+| `BOXY_KVM_MODE` | `device` | `device` (production, requires KVM device plugin) or `hostpath` (kind/dev, privileged). |
+
+### mTLS
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BOXY_MTLS_DISABLED` | `false` | Set `true` for local dev. |
+| `BOXY_TLS_CA_PATH` | `/tls/ca.crt` | |
+| `BOXY_TLS_CLIENT_CERT_PATH` | `/tls/tls.crt` | |
+| `BOXY_TLS_CLIENT_KEY_PATH` | `/tls/tls.key` | |
+| `BOXY_MTLS_CONTROLLER_SECRET` | `boxy-mtls-controller` | K8s Secret mounted into controller pods. |
+
+### VM operator defaults
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BOXY_VM_LOG_LEVEL` | `warn` | `off` / `error` / `warn` / `info` / `debug` / `trace` |
+| `BOXY_VM_METRICS_INTERVAL_MS` | `0` | 0 = disabled. |
+| `BOXY_VM_PULL_POLICY` | `if_missing` | `if_missing` / `always` / `never` |
+| `BOXY_LIBKRUNFW_PATH` | — | Override microsandbox default. |
+
+### Sandbox provisioning limits
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BOXY_MAX_SANDBOX_TTL_SECONDS` | `86400` | |
+| `BOXY_MAX_SANDBOX_LIFETIME_SECONDS` | `604800` | |
+| `BOXY_MAX_SANDBOX_ENV_KEYS` | `32` | |
+| `BOXY_MAX_SANDBOX_LABELS` | `16` | |
+| `BOXY_MAX_SANDBOX_ANNOTATIONS` | `32` | |
+| `BOXY_MAX_IMAGE_REF_BYTES` | `512` | |
+| `BOXY_MAX_SANDBOX_CPU` / `BOXY_MAX_SANDBOX_MEMORY` | — | Upper bounds for pod resources. |
+| `BOXY_WORKER_SERVICE_ACCOUNT` | `boxy-worker` | |
+| `BOXY_ALLOWED_SERVICE_ACCOUNTS` | — | Comma-separated extra allowed SAs. |
+| `BOXY_IMAGE_PULL_SECRET` | — | Default pull secret. |
+| `BOXY_ALLOWED_PULL_SECRETS` | — | Comma-separated extra allowed pull secrets. |
 
 ## Local development
 
@@ -111,7 +195,7 @@ make test
 make lint
 ```
 
-Requires Go 1.22+.
+Requires Go 1.22+ and Rust 1.95+ (for the controller).
 
 ## Build images
 
@@ -119,89 +203,97 @@ Requires Go 1.22+.
 make docker-build IMAGE_REPO=your.registry/boxy TAG=dev
 ```
 
-## Helm install (recommended)
+This builds the router and worker images. The controller image is built separately:
+
+```bash
+docker build -f Dockerfile.controller -t your.registry/boxy/boxy-controller:dev .
+```
+
+## Helm install
 
 ```bash
 helm upgrade --install boxy ./deploy/helm/boxy -n boxy --create-namespace \
   --set imageRouter=your.registry/boxy/boxy-router:dev \
   --set imageWorker=your.registry/boxy/boxy-worker:dev \
+  --set controllerImage=your.registry/boxy/boxy-controller:dev \
   --set routerToken="$(openssl rand -hex 16)" \
   --set workerToken="$(openssl rand -hex 32)"
 ```
 
-Set `sandboxNamespace` when sandboxes should live outside the release namespace.
+Set `sandboxNamespace` when sandboxes should live outside the release namespace. Set `kvmMode: hostpath` for kind clusters without a KVM device plugin.
 
-## kind end-to-end plan
+## E2E tests
 
-Requires: Docker, kind, kubectl, Helm, jq.
+Requires `BOXY_E2E_BASE_URL` and `BOXY_E2E_ROUTER_TOKEN` env vars pointing at a running cluster.
 
 ```bash
-make e2e
+make e2e-go
 ```
-
-This runs `hack/kind-e2e.sh`, which loads locally built images, installs the chart, port-forwards the router Service, exercises `api_exec` + `pod_exec`, negative UID/label cases, and TTL deletion via the reaper.
 
 ## curl examples
 
-Replace `TOKEN` and host with live values. You can pass `podRef` from `POST /v1/sandboxes` or omit it and rely on `sandboxId` + `sessionId` lookup.
-
 ```bash
+# Create a sandbox
 curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"sessionId":"demo","sandboxId":"demo-1","owner":"you","ttlSeconds":3600}' \
   http://127.0.0.1:8080/v1/sandboxes | jq .
 
+# Execute a command
 curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d @- http://127.0.0.1:8080/v1/exec <<'JSON' | jq .
+  -d '{"sessionId":"demo","sandboxId":"demo-1","command":"echo","args":["hello"],"env":{},"timeoutSeconds":60}' \
+  http://127.0.0.1:8080/v1/exec | jq .
+
+# Create with VM config and network policy
+curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d @- http://127.0.0.1:8080/v1/sandboxes <<'JSON' | jq .
 {
   "sessionId": "demo",
-  "sandboxId": "demo-1",
-  "podRef": { "namespace": "boxy", "name": "boxy-demo-1", "uid": "<uid-from-apiserver>" },
-  "command": "sh",
-  "args": ["-c", "echo hello"],
-  "env": {},
-  "timeoutSeconds": 60,
-  "mode": "api_exec"
+  "sandboxId": "demo-2",
+  "owner": "you",
+  "ttlSeconds": 3600,
+  "allowedBinaries": ["curl", "python3"],
+  "vm": { "memoryMb": 1024, "vcpus": 2 },
+  "network": { "allowedEgressDomains": ["api.github.com", "pypi.org"] }
 }
 JSON
 
-curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"sessionId":"demo","sandboxId":"demo-1","command":"sh","args":["-c","echo hello"],"env":{},"timeoutSeconds":60,"mode":"api_exec"}' \
-  http://127.0.0.1:8080/v1/exec | jq .
+# Delete a sandbox
+curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8080/v1/sandboxes/demo-1
 ```
 
-## Worker image contents
-
-The `Dockerfile.worker` installs common networking/database CLIs plus `kubectl`, `helm`, `kustomize`, `yq`, `kn`, `argocd`, `terraform`, `gh`, `stern`, AWS CLI v2, Google Cloud CLI, and Azure CLI (`pip`). Datadog CLI is not bundled (hook your own lightweight install if required).
-
-## API status codes (common)
+## API status codes
 
 | Code | Meaning |
 |------|---------|
 | `401` | Missing/invalid router bearer token. |
-| `403` | Pod validation failed (UID/labels/phase/managed-by). |
-| `404` | Unknown sandbox (`GET`), or exec lookup found no pod for `sandboxId`/`sessionId` when `podRef` was omitted. |
-| `409` | Sandbox owner/session conflict on create. |
+| `404` | Sandbox not found in routing store. |
 | `413` | Output cap exceeded. |
 | `429` | Concurrency limit. |
-
-## Testing
-
-- Unit tests: request validation, pod validation (fake clientset), reaper decisions, shell/exit-code helpers.
-- Integration style: `k8s.io/client-go/kubernetes/fake`.
-- E2E: see `hack/kind-e2e.sh`.
+| `502` | Controller pod unreachable or returned an error. |
+| `503` | Controller pod not ready (still starting). |
 
 ## Project layout
 
 ```
-cmd/boxy-router   # control plane HTTP server
-cmd/boxy-worker   # sandbox-side HTTP exec
-internal/api      # types + validation
-internal/kube     # clients, pod lifecycle, validation helpers
-internal/exec     # api_exec client + pod exec + shell wrapper
-internal/session  # TTL / reaper logic
-internal/router   # HTTP router / handlers
-deploy/helm/boxy  # Helm chart + RBAC
-deploy/manifests  # standalone RBAC example
+cmd/boxy-router/       # Router entry point (Go)
+cmd/boxy-worker/       # Worker entry point (Go)
+controller/            # Microsandbox controller (Rust)
+  src/                 #   Axum HTTP server, sandbox manager, mTLS
+  tests/
+internal/
+  api/                 # Shared types + validation
+  exec/                # api_exec/pod_exec clients, shell helpers
+  kube/                # K8s helpers: route store, controller pod lifecycle, pod validation
+  router/              # HTTP server, mTLS client, sync reconciler
+  session/             # TTL / reaper logic
+deploy/
+  helm/boxy/           # Helm chart (router, controller RBAC, mTLS secrets, NetworkPolicy)
+  manifests/           # Standalone RBAC example
+test/e2e/              # Go E2E tests
+Dockerfile.router
+Dockerfile.controller
+Dockerfile.worker
 ```
 
 ## License

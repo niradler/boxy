@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,22 +24,6 @@ func ShouldReapPod(now time.Time, pod *corev1.Pod) (bool, string) {
 		t, err := time.Parse(time.RFC3339, exp)
 		if err == nil && !now.Before(t) {
 			return true, "ttl_expired"
-		}
-	}
-	created := ann[api.AnnotationCreatedAt]
-	if created == "" {
-		return false, ""
-	}
-	ct, err := time.Parse(time.RFC3339, created)
-	if err != nil {
-		return false, ""
-	}
-	if ml := ann[api.AnnotationMaxLifetimeSec]; ml != "" {
-		sec, err := strconv.Atoi(ml)
-		if err == nil && sec > 0 {
-			if now.Sub(ct) >= time.Duration(sec)*time.Second {
-				return true, "max_lifetime_exceeded"
-			}
 		}
 	}
 	return false, ""

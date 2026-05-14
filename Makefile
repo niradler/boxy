@@ -19,11 +19,11 @@ fmt:
 
 docker-build:
 	docker build -f Dockerfile.router -t $(IMAGE_REPO)/boxy-router:$(TAG) .
-	docker build -f Dockerfile.worker -t $(IMAGE_REPO)/boxy-worker:$(TAG) .
+	docker build -f Dockerfile.controller -t $(IMAGE_REPO)/boxy-controller:$(TAG) .
 
 kind-load: docker-build
 	kind load docker-image $(IMAGE_REPO)/boxy-router:$(TAG)
-	kind load docker-image $(IMAGE_REPO)/boxy-worker:$(TAG)
+	kind load docker-image $(IMAGE_REPO)/boxy-controller:$(TAG)
 
 e2e:
-	bash hack/kind-e2e.sh
+	bash local/kind-e2e.sh

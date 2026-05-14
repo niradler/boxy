@@ -42,23 +42,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "boxy.fullname" . }}-tokens
                   key: router-token
-            - name: BOXY_WORKER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "boxy.fullname" . }}-tokens
-                  key: worker-token
             - name: BOXY_SANDBOX_NAMESPACE
               value: {{ include "boxy.sandboxNamespace" . | quote }}
-            - name: BOXY_WORKER_IMAGE
-              value: {{ .Values.imageWorker | quote }}
-            - name: BOXY_WORKER_SERVICE_ACCOUNT
-              value: {{ .Values.workerServiceAccount | quote }}
-            - name: BOXY_WORKER_PORT
-              value: {{ .Values.workerPort | quote }}
-            - name: BOXY_WORKER_CPU
-              value: {{ .Values.workerResources.cpu | quote }}
-            - name: BOXY_WORKER_MEMORY
-              value: {{ .Values.workerResources.memory | quote }}
             - name: BOXY_REAPER_INTERVAL_SECONDS
               value: {{ .Values.reaperIntervalSeconds | quote }}
             - name: BOXY_CONTROLLER_IMAGE

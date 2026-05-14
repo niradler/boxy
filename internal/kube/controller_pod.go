@@ -363,8 +363,20 @@ func kvmSecurityContext(mode string, runAsNonRoot, allowPriv, privileged *bool, 
 	return sc
 }
 
-// controllerReadinessProbe returns an HTTP probe when mTLS is off, and a TCP
-// socket probe when mTLS is on — k8s probes can't present client certs.
+func boolPtr(b bool) *bool { return &b }
+
+func PodRunningReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
 func controllerReadinessProbe(spec ControllerPodSpec) *corev1.Probe {
 	base := corev1.Probe{
 		InitialDelaySeconds: 2,

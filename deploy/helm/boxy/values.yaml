@@ -1,15 +1,12 @@
 imageRouter: boxy-router:e2e
-imageWorker: boxydev/boxy-worker:dev
 imagePullPolicy: IfNotPresent
 
 sandboxNamespace: ""
 
 routerReplicas: 2
 routerServicePort: 8080
-workerPort: 8080
 
 routerToken: "changeme-router"
-workerToken: "changeme-worker"
 
 resourcesRouter:
   requests:
@@ -19,13 +16,8 @@ resourcesRouter:
     cpu: "1"
     memory: 512Mi
 
-workerResources:
-  cpu: "500m"
-  memory: "1Gi"
-
 reaperIntervalSeconds: 30
 
-workerServiceAccount: boxy-worker
 routerServiceAccount: boxy-router
 
 # --- Microsandbox controller (bin-packing model) ---

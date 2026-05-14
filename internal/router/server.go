@@ -23,35 +23,26 @@ import (
 )
 
 type Config struct {
-	ListenAddr        string
-	AuthToken         string
-	WorkerToken       string
-	SandboxNamespace  string
-	WorkerImage       string
-	WorkerServiceAcct string
-	WorkerPort        int32
-	PullSecret        string
-	ResourceCPU       string
-	ResourceMemory    string
-	MaxBodyBytes      int
-	MaxOutputBytes    int
-	MaxTimeoutSec     int
-	MaxArgs           int
-	MaxEnvKeys        int
-	MaxConcurrency    int
-	MaxSandboxTTLSec  int
-	MaxSandboxLifeSec int
-	ReaperEvery       time.Duration
-	SandboxLimits     api.SandboxProvisionLimits
-	Kube              kubernetes.Interface
-	RESTConfig        *rest.Config
+	ListenAddr     string
+	AuthToken      string
+	SandboxNamespace string
+	MaxBodyBytes   int
+	MaxOutputBytes int
+	MaxTimeoutSec  int
+	MaxArgs        int
+	MaxEnvKeys     int
+	MaxConcurrency int
+	MaxSandboxTTLSec int
+	ReaperEvery    time.Duration
+	Kube           kubernetes.Interface
+	RESTConfig     *rest.Config
 
-	// Controller-pod bin-packing model (new)
 	ControllerImage           string
 	ControllerPort            int32
 	ControllerTTLSec          int
 	MaxSandboxesPerController int
 	ControllerServiceAcct     string
+	PullSecret                string
 	MTLSDisabled              bool
 	MTLSControllerSecret      string
 	TLSCAPath                 string
@@ -99,23 +90,6 @@ func envStr(key, def string) string {
 	return v
 }
 
-func mergeAllowCSV(csv string, defaults ...string) map[string]struct{} {
-	m := map[string]struct{}{}
-	for _, d := range defaults {
-		d = strings.TrimSpace(d)
-		if d != "" {
-			m[d] = struct{}{}
-		}
-	}
-	for _, p := range strings.Split(csv, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			m[p] = struct{}{}
-		}
-	}
-	return m
-}
-
 func ConfigFromEnv() (*Config, error) {
 	k, err := kube.NewClientset()
 	if err != nil {
@@ -129,63 +103,26 @@ func ConfigFromEnv() (*Config, error) {
 	if auth == "" {
 		return nil, fmt.Errorf("BOXY_ROUTER_TOKEN is required")
 	}
-	wtok := strings.TrimSpace(os.Getenv("BOXY_WORKER_TOKEN"))
-	if wtok == "" {
-		return nil, fmt.Errorf("BOXY_WORKER_TOKEN is required")
-	}
 	ns := strings.TrimSpace(os.Getenv("BOXY_SANDBOX_NAMESPACE"))
 	if ns == "" {
 		ns = metav1.NamespaceDefault
 	}
-	img := strings.TrimSpace(os.Getenv("BOXY_WORKER_IMAGE"))
-	if img == "" {
-		return nil, fmt.Errorf("BOXY_WORKER_IMAGE is required")
-	}
-	sa := strings.TrimSpace(os.Getenv("BOXY_WORKER_SERVICE_ACCOUNT"))
-	if sa == "" {
-		sa = "boxy-worker"
-	}
-	port := int32(envInt("BOXY_WORKER_PORT", 8080))
 	pull := strings.TrimSpace(os.Getenv("BOXY_IMAGE_PULL_SECRET"))
-	allowedSA := mergeAllowCSV(os.Getenv("BOXY_ALLOWED_SERVICE_ACCOUNTS"), sa)
-	allowedPull := mergeAllowCSV(os.Getenv("BOXY_ALLOWED_PULL_SECRETS"), pull)
-	limits := api.SandboxProvisionLimits{
-		MaxEnvKeys:         envInt("BOXY_MAX_SANDBOX_ENV_KEYS", 32),
-		MaxLabels:          envInt("BOXY_MAX_SANDBOX_LABELS", 16),
-		MaxAnnotations:     envInt("BOXY_MAX_SANDBOX_ANNOTATIONS", 32),
-		MaxImageRefLen:     envInt("BOXY_MAX_IMAGE_REF_BYTES", 512),
-		MinWorkerPort:      envInt("BOXY_MIN_WORKER_PORT", 1),
-		MaxWorkerPort:      envInt("BOXY_MAX_WORKER_PORT", 65535),
-		MaxCPU:             strings.TrimSpace(os.Getenv("BOXY_MAX_SANDBOX_CPU")),
-		MaxMemory:          strings.TrimSpace(os.Getenv("BOXY_MAX_SANDBOX_MEMORY")),
-		AllowedServiceAcct: allowedSA,
-		AllowedPullSecrets: allowedPull,
-		DefaultServiceAcct: sa,
-		GlobalPullSecret:   pull,
-	}
 	cfg := &Config{
-		ListenAddr:        strings.TrimSpace(os.Getenv("BOXY_LISTEN_ADDR")),
-		AuthToken:         auth,
-		WorkerToken:       wtok,
-		SandboxNamespace:  ns,
-		WorkerImage:       img,
-		WorkerServiceAcct: sa,
-		WorkerPort:        port,
-		PullSecret:        pull,
-		ResourceCPU:       strings.TrimSpace(os.Getenv("BOXY_WORKER_CPU")),
-		ResourceMemory:    strings.TrimSpace(os.Getenv("BOXY_WORKER_MEMORY")),
-		MaxBodyBytes:      envInt("BOXY_MAX_BODY_BYTES", 1<<20),
-		MaxOutputBytes:    envInt("BOXY_MAX_OUTPUT_BYTES", 2<<20),
-		MaxTimeoutSec:     envInt("BOXY_MAX_TIMEOUT_SECONDS", 3600),
-		MaxArgs:           envInt("BOXY_MAX_ARGS", 256),
-		MaxEnvKeys:        envInt("BOXY_MAX_ENV_KEYS", 64),
-		MaxConcurrency:    envInt("BOXY_MAX_CONCURRENCY", 100),
-		MaxSandboxTTLSec:  envInt("BOXY_MAX_SANDBOX_TTL_SECONDS", 86400),
-		MaxSandboxLifeSec: envInt("BOXY_MAX_SANDBOX_LIFETIME_SECONDS", 604800),
-		ReaperEvery:       time.Duration(envInt("BOXY_REAPER_INTERVAL_SECONDS", 30)) * time.Second,
-		SandboxLimits:     limits,
-		Kube:              k,
-		RESTConfig:        rc,
+		ListenAddr:       strings.TrimSpace(os.Getenv("BOXY_LISTEN_ADDR")),
+		AuthToken:        auth,
+		SandboxNamespace: ns,
+		PullSecret:       pull,
+		MaxBodyBytes:     envInt("BOXY_MAX_BODY_BYTES", 1<<20),
+		MaxOutputBytes:   envInt("BOXY_MAX_OUTPUT_BYTES", 2<<20),
+		MaxTimeoutSec:    envInt("BOXY_MAX_TIMEOUT_SECONDS", 3600),
+		MaxArgs:          envInt("BOXY_MAX_ARGS", 256),
+		MaxEnvKeys:       envInt("BOXY_MAX_ENV_KEYS", 64),
+		MaxConcurrency:   envInt("BOXY_MAX_CONCURRENCY", 100),
+		MaxSandboxTTLSec: envInt("BOXY_MAX_SANDBOX_TTL_SECONDS", 86400),
+		ReaperEvery:      time.Duration(envInt("BOXY_REAPER_INTERVAL_SECONDS", 30)) * time.Second,
+		Kube:             k,
+		RESTConfig:       rc,
 
 		ControllerImage:           strings.TrimSpace(os.Getenv("BOXY_CONTROLLER_IMAGE")),
 		ControllerPort:            int32(envInt("BOXY_CONTROLLER_PORT", 8080)),
@@ -278,7 +215,6 @@ func NewServer(cfg Config) *Server {
 	return s
 }
 
-// StartupSync runs the initial reconcile before serving; failure is non-fatal.
 func (s *Server) StartupSync(ctx context.Context) {
 	if err := s.sync.Trigger(ctx, "startup"); err != nil {
 		s.log.Warn("startup sync failed; serving with lazy recovery", "err", err)
@@ -402,7 +338,7 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
 		return
 	}
-	if err := api.ValidateSandboxProvisioning(&body, s.cfg.MaxSandboxTTLSec, s.cfg.MaxSandboxLifeSec, s.cfg.SandboxLimits); err != nil {
+	if err := api.ValidateSandboxCreate(&body, s.cfg.MaxSandboxTTLSec); err != nil {
 		s.jsonErr(w, http.StatusBadRequest, err.Error(), "provisioning")
 		return
 	}
@@ -444,7 +380,6 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds:      body.TTLSeconds,
 	}
 	if err := s.ctrlClient.CreateSandbox(ctx, baseURL, req); err != nil {
-		// Release the claimed seat; failure here is corrected later by reaper TTL or sync.
 		if derr := kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, -1); derr != nil {
 			s.log.Warn("release controller seat after create failure",
 				"pod", pod.Name, "err", derr)
@@ -470,7 +405,6 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		SessionID: body.SessionID,
 		Owner:     body.Owner,
 		Runtime:   "microsandbox",
-		Image:     body.Image,
 		PodRef:    api.PodRef{Namespace: pod.Namespace, Name: pod.Name, UID: string(pod.UID)},
 		Phase:     string(pod.Status.Phase),
 		Ready:     kube.PodRunningReady(pod),
@@ -478,8 +412,6 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, resp)
 }
 
-// claimControllerSeat reserves capacity on a controller pod before the upstream
-// CreateSandbox call. On Full it retries selection (possibly creating a new pod).
 func (s *Server) claimControllerSeat(ctx context.Context) (*corev1.Pod, error) {
 	const maxAttempts = 4
 	var lastErr error
@@ -498,10 +430,6 @@ func (s *Server) claimControllerSeat(ctx context.Context) (*corev1.Pod, error) {
 	return nil, fmt.Errorf("could not claim controller seat after %d attempts: %w", maxAttempts, lastErr)
 }
 
-// handleSandboxGet returns the routing-store view of the sandbox. During the
-// migration to the controller-pod model this is best-effort: it confirms the
-// sandbox exists in our route store and points to its controller pod, but does
-// not query the controller for VM-level details (that lives in a later task).
 func (s *Server) handleSandboxGet(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sandboxId"))
 	if id == "" {
@@ -577,7 +505,7 @@ func (s *Server) StartReaper(ctx context.Context, wg *sync.WaitGroup) {
 				if err != nil {
 					s.log.Error("reaper", "err", err)
 				} else if n > 0 {
-					s.log.Info("reaper deleted worker pods", "count", n)
+					s.log.Info("reaper deleted pods", "count", n)
 				}
 				m, err := kube.ReapControllerPods(context.Background(), s.cfg.Kube, s.cfg.SandboxNamespace)
 				if err != nil {

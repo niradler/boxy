@@ -15,15 +15,14 @@ import (
 	"boxy.dev/boxy/internal/api"
 )
 
-func testCreds(t *testing.T) (base, token, workerImage string) {
+func testCreds(t *testing.T) (base, token string) {
 	t.Helper()
 	base = strings.TrimSuffix(strings.TrimSpace(os.Getenv("BOXY_E2E_BASE_URL")), "/")
 	token = strings.TrimSpace(os.Getenv("BOXY_E2E_ROUTER_TOKEN"))
-	workerImage = strings.TrimSpace(os.Getenv("BOXY_E2E_WORKER_IMAGE"))
 	if base == "" || token == "" {
 		t.Skip("set BOXY_E2E_BASE_URL and BOXY_E2E_ROUTER_TOKEN")
 	}
-	return base, token, workerImage
+	return base, token
 }
 
 func httpClient() *http.Client {
@@ -31,7 +30,7 @@ func httpClient() *http.Client {
 }
 
 func TestHealth(t *testing.T) {
-	base, _, _ := testCreds(t)
+	base, _ := testCreds(t)
 	resp, err := httpClient().Get(base + "/healthz")
 	if err != nil {
 		t.Fatal(err)
@@ -42,19 +41,14 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestCustomSandboxProvisioningAndExec(t *testing.T) {
-	base, tok, wrkImg := testCreds(t)
-	if wrkImg == "" {
-		t.Skip("BOXY_E2E_WORKER_IMAGE not set")
-	}
+func TestSandboxCreateAndExec(t *testing.T) {
+	base, tok := testCreds(t)
 	create := api.SandboxCreateBody{
 		SessionID:  "e2e-session",
-		SandboxID:  "e2e-custom-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		SandboxID:  "e2e-sandbox-" + strconv.FormatInt(time.Now().UnixNano(), 10),
 		Owner:      "e2e",
 		TTLSeconds: 600,
-		Image:      wrkImg,
 		Env:        map[string]string{"E2E_MARKER": "provisioned"},
-		Labels:     map[string]string{"e2e.boxy.dev/run": "1"},
 	}
 	payload, _ := json.Marshal(create)
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
@@ -75,39 +69,23 @@ func TestCustomSandboxProvisioningAndExec(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&sb); err != nil {
 		t.Fatal(err)
 	}
-	if sb.Image != wrkImg {
-		t.Fatalf("image %q want %q", sb.Image, wrkImg)
+	if sb.SandboxID != create.SandboxID {
+		t.Fatalf("sandboxId %q want %q", sb.SandboxID, create.SandboxID)
 	}
-	if strings.TrimSpace(sb.PodRef.UID) == "" {
-		t.Fatal("missing uid")
-	}
+
 	waitReady(t, base, tok, sb)
+
 	execBody := api.ExecRequestBody{
 		SessionID:      create.SessionID,
 		SandboxID:      create.SandboxID,
-		PodRef:         sb.PodRef,
 		Command:        "sh",
 		Args:           []string{"-c", "echo -n $E2E_MARKER"},
 		Env:            map[string]string{},
 		TimeoutSeconds: 120,
-		Mode:           api.ExecModeAPI,
 	}
 	out := postExec(t, base, tok, execBody)
 	if out.Stdout != "provisioned" {
 		t.Fatalf("stdout %q", out.Stdout)
-	}
-	execNoRef := api.ExecRequestBody{
-		SessionID:      create.SessionID,
-		SandboxID:      create.SandboxID,
-		Command:        "sh",
-		Args:           []string{"-c", "echo -n resolved"},
-		Env:            map[string]string{},
-		TimeoutSeconds: 120,
-		Mode:           api.ExecModeAPI,
-	}
-	out2 := postExec(t, base, tok, execNoRef)
-	if out2.Stdout != "resolved" {
-		t.Fatalf("resolved exec stdout %q", out2.Stdout)
 	}
 }
 
@@ -122,7 +100,7 @@ func waitReady(t *testing.T, base, tok string, sb api.SandboxResponseBody) {
 			var cur api.SandboxResponseBody
 			_ = json.NewDecoder(res.Body).Decode(&cur)
 			res.Body.Close()
-			if cur.Ready && cur.PodRef.UID == sb.PodRef.UID {
+			if cur.Ready {
 				return
 			}
 		} else if res != nil {
