@@ -9,17 +9,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	boxyv1 "boxy.dev/boxy/api/v1alpha1"
 	"boxy.dev/boxy/internal/api"
-	"boxy.dev/boxy/internal/kube"
-	"boxy.dev/boxy/internal/session"
+	ctrlclient "boxy.dev/boxy/internal/controller"
 )
 
 type Config struct {
@@ -33,28 +33,18 @@ type Config struct {
 	MaxEnvKeys       int
 	MaxConcurrency   int
 	MaxSandboxTTLSec int
-	ReaperEvery      time.Duration
-	Kube             kubernetes.Interface
-	RESTConfig       *rest.Config
 
-	ControllerImage           string
-	ControllerPort            int32
-	ControllerTTLSec          int
-	MaxSandboxesPerController int
-	ControllerServiceAcct     string
-	PullSecret                string
-	MTLSDisabled              bool
-	MTLSControllerSecret      string
-	TLSCAPath                 string
-	TLSClientCertPath         string
-	TLSClientKeyPath          string
-	DefaultSandboxEnabled     bool
-	DefaultSandboxConfig      *api.SandboxCreateBody
-	VMLogLevel                string
-	VMMetricsIntMs            int
-	VMPullPolicy              string
-	LibKrunfwPath             string
-	KVMMode                   string
+	MTLSDisabled      bool
+	TLSCAPath         string
+	TLSClientCertPath string
+	TLSClientKeyPath  string
+
+	ControllerPort int32
+
+	DefaultSandboxEnabled bool
+	DefaultSandboxConfig  *api.SandboxCreateBody
+
+	CreateTimeout time.Duration
 }
 
 func envInt(key string, def int) int {
@@ -93,14 +83,6 @@ func envStr(key, def string) string {
 }
 
 func ConfigFromEnv() (*Config, error) {
-	k, err := kube.NewClientset()
-	if err != nil {
-		return nil, err
-	}
-	rc, err := kube.BuildConfig()
-	if err != nil {
-		return nil, err
-	}
 	auth := strings.TrimSpace(os.Getenv("BOXY_ROUTER_TOKEN"))
 	if auth == "" {
 		return nil, fmt.Errorf("BOXY_ROUTER_TOKEN is required")
@@ -109,38 +91,23 @@ func ConfigFromEnv() (*Config, error) {
 	if ns == "" {
 		ns = metav1.NamespaceDefault
 	}
-	pull := strings.TrimSpace(os.Getenv("BOXY_IMAGE_PULL_SECRET"))
 	cfg := &Config{
-		ListenAddr:       strings.TrimSpace(os.Getenv("BOXY_LISTEN_ADDR")),
-		AuthToken:        auth,
-		SandboxNamespace: ns,
-		PullSecret:       pull,
-		MaxBodyBytes:     envInt("BOXY_MAX_BODY_BYTES", 1<<20),
-		MaxOutputBytes:   envInt("BOXY_MAX_OUTPUT_BYTES", 2<<20),
-		MaxTimeoutSec:    envInt("BOXY_MAX_TIMEOUT_SECONDS", 3600),
-		MaxArgs:          envInt("BOXY_MAX_ARGS", 256),
-		MaxEnvKeys:       envInt("BOXY_MAX_ENV_KEYS", 64),
-		MaxConcurrency:   envInt("BOXY_MAX_CONCURRENCY", 100),
-		MaxSandboxTTLSec: envInt("BOXY_MAX_SANDBOX_TTL_SECONDS", 86400),
-		ReaperEvery:      time.Duration(envInt("BOXY_REAPER_INTERVAL_SECONDS", 30)) * time.Second,
-		Kube:             k,
-		RESTConfig:       rc,
-
-		ControllerImage:           strings.TrimSpace(os.Getenv("BOXY_CONTROLLER_IMAGE")),
-		ControllerPort:            int32(envInt("BOXY_CONTROLLER_PORT", 8080)),
-		ControllerTTLSec:          envInt("BOXY_CONTROLLER_TTL_SECONDS", 3600),
-		MaxSandboxesPerController: envInt("BOXY_MAX_SANDBOXES_PER_CONTROLLER", 20),
-		ControllerServiceAcct:     strings.TrimSpace(os.Getenv("BOXY_CONTROLLER_SERVICE_ACCOUNT")),
-		MTLSDisabled:              envBool("BOXY_MTLS_DISABLED", false),
-		MTLSControllerSecret:      envStr("BOXY_MTLS_CONTROLLER_SECRET", "boxy-mtls-controller"),
-		TLSCAPath:                 envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
-		TLSClientCertPath:         envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
-		TLSClientKeyPath:          envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
-		VMLogLevel:                envStr("BOXY_VM_LOG_LEVEL", ""),
-		VMMetricsIntMs:            envInt("BOXY_VM_METRICS_INTERVAL_MS", 0),
-		VMPullPolicy:              envStr("BOXY_VM_PULL_POLICY", ""),
-		LibKrunfwPath:             envStr("BOXY_LIBKRUNFW_PATH", ""),
-		KVMMode:                   envStr("BOXY_KVM_MODE", "device"),
+		ListenAddr:        strings.TrimSpace(os.Getenv("BOXY_LISTEN_ADDR")),
+		AuthToken:         auth,
+		SandboxNamespace:  ns,
+		MaxBodyBytes:      envInt("BOXY_MAX_BODY_BYTES", 1<<20),
+		MaxOutputBytes:    envInt("BOXY_MAX_OUTPUT_BYTES", 2<<20),
+		MaxTimeoutSec:     envInt("BOXY_MAX_TIMEOUT_SECONDS", 3600),
+		MaxArgs:           envInt("BOXY_MAX_ARGS", 256),
+		MaxEnvKeys:        envInt("BOXY_MAX_ENV_KEYS", 64),
+		MaxConcurrency:    envInt("BOXY_MAX_CONCURRENCY", 100),
+		MaxSandboxTTLSec:  envInt("BOXY_MAX_SANDBOX_TTL_SECONDS", 86400),
+		MTLSDisabled:      envBool("BOXY_MTLS_DISABLED", false),
+		TLSCAPath:         envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
+		TLSClientCertPath: envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
+		TLSClientKeyPath:  envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
+		ControllerPort:    int32(envInt("BOXY_CONTROLLER_PORT", 8080)),
+		CreateTimeout:     time.Duration(envInt("BOXY_CREATE_TIMEOUT_SECONDS", 30)) * time.Second,
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":8080"
@@ -170,78 +137,38 @@ func ConfigFromEnv() (*Config, error) {
 }
 
 type Server struct {
-	cfg           Config
-	log           *slog.Logger
-	sem           chan struct{}
-	httpTransport *http.Transport
-	store         *kube.SandboxRouteStore
-	ctrlClient    *ControllerClient
-	ctrlSpec      kube.ControllerPodSpec
-	sync          *SyncReconciler
+	cfg        Config
+	log        *slog.Logger
+	sem        chan struct{}
+	k8sClient  client.Client
+	k8sReader  client.Reader
+	ctrlClient *ctrlclient.Client
 }
 
-func NewServer(cfg Config) *Server {
+func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader) *Server {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
 	}
-	s := &Server{
-		cfg: cfg,
-		log: slog.Default(),
-		sem: make(chan struct{}, cfg.MaxConcurrency),
-		httpTransport: &http.Transport{
-			MaxIdleConns:        128,
-			MaxIdleConnsPerHost: 64,
-			IdleConnTimeout:     90 * time.Second,
-			ForceAttemptHTTP2:   true,
-		},
+	return &Server{
+		cfg:       cfg,
+		log:       slog.Default(),
+		sem:       make(chan struct{}, cfg.MaxConcurrency),
+		k8sClient: k8sClient,
+		k8sReader: k8sReader,
+		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
+			MTLSDisabled: cfg.MTLSDisabled,
+			CACertPath:   cfg.TLSCAPath,
+			ClientCert:   cfg.TLSClientCertPath,
+			ClientKey:    cfg.TLSClientKeyPath,
+		}),
 	}
-	s.store = kube.NewSandboxRouteStore(cfg.Kube, cfg.SandboxNamespace, "boxy-sandbox-routes")
-	s.ctrlClient = NewControllerClient(ControllerClientConfig{
-		MTLSDisabled: cfg.MTLSDisabled,
-		CACertPath:   cfg.TLSCAPath,
-		ClientCert:   cfg.TLSClientCertPath,
-		ClientKey:    cfg.TLSClientKeyPath,
-	})
-	s.ctrlSpec = kube.ControllerPodSpec{
-		Namespace:       cfg.SandboxNamespace,
-		ControllerImage: cfg.ControllerImage,
-		MaxSandboxes:    cfg.MaxSandboxesPerController,
-		Port:            cfg.ControllerPort,
-		TTLSeconds:      cfg.ControllerTTLSec,
-		PullSecretName:  cfg.PullSecret,
-		ServiceAccount:  cfg.ControllerServiceAcct,
-		MTLSDisabled:    cfg.MTLSDisabled,
-		MTLSSecretName:  cfg.MTLSControllerSecret,
-		VMLogLevel:      cfg.VMLogLevel,
-		VMMetricsIntMs:  cfg.VMMetricsIntMs,
-		VMPullPolicy:    cfg.VMPullPolicy,
-		LibKrunfwPath:   cfg.LibKrunfwPath,
-		KVMMode:         cfg.KVMMode,
-	}
-	scheme := "https"
-	if cfg.MTLSDisabled {
-		scheme = "http"
-	}
-	s.sync = NewSyncReconciler(SyncReconcilerConfig{
-		Kube:       cfg.Kube,
-		Namespace:  cfg.SandboxNamespace,
-		Store:      s.store,
-		HTTPClient: s.ctrlClient.RawClient(),
-		Scheme:     scheme,
-		Port:       cfg.ControllerPort,
-		Logger:     s.log,
-	})
-	s.store.SetSyncHooks(
-		func(_ context.Context, reason string) { s.sync.TriggerAsync("store-conflict:" + reason) },
-		func(_ context.Context, reason string) { s.sync.TriggerAsync("parse-error:" + reason) },
-	)
-	return s
 }
 
-func (s *Server) StartupSync(ctx context.Context) {
-	if err := s.sync.Trigger(ctx, "startup"); err != nil {
-		s.log.Warn("startup sync failed; serving with lazy recovery", "err", err)
-	}
+func NewScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(boxyv1.AddToScheme(s))
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -326,19 +253,18 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(body.TimeoutSeconds)*time.Second+5*time.Second)
 	defer cancel()
 
-	route, ok, err := s.store.Get(ctx, body.SandboxID)
+	sandbox, err := s.lookupSandbox(ctx, body.SandboxID)
 	if err != nil {
 		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
 		return
 	}
-	if !ok {
+	if sandbox == nil || sandbox.Status.Phase != boxyv1.SandboxPhaseRunning {
 		s.jsonErr(w, http.StatusNotFound, "sandbox not found", "sandbox_lookup")
 		return
 	}
 
-	baseURL := s.controllerURL(route)
-
-	result, err := s.ctrlClient.Exec(ctx, baseURL, ExecReq{
+	baseURL := s.controllerURL(sandbox)
+	result, err := s.ctrlClient.Exec(ctx, baseURL, ctrlclient.ExecReq{
 		SandboxID:      body.SandboxID,
 		Command:        body.Command,
 		Args:           body.Args,
@@ -346,15 +272,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds: body.TimeoutSeconds,
 	})
 	if err != nil {
-		if IsStaleRouteError(err) {
-			s.store.InvalidateCache(body.SandboxID)
-			s.sync.TriggerAsync("exec-stale-route")
-		}
 		s.jsonErr(w, http.StatusBadGateway, err.Error(), "exec")
 		return
 	}
 
-	_ = kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, route.ControllerPodName, s.ctrlSpec.TTLSeconds)
+	go s.touchLastExec(sandbox)
 
 	s.writeJSON(w, http.StatusOK, &api.ExecResponseBody{
 		Stdout:   result.Stdout,
@@ -383,44 +305,22 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, resp)
 }
 
-func (s *Server) claimControllerSeat(ctx context.Context) (*corev1.Pod, error) {
-	const maxAttempts = 4
-	var lastErr error
-	for range maxAttempts {
-		pod, err := kube.SelectOrCreateControllerPod(ctx, s.cfg.Kube, s.ctrlSpec)
-		if err != nil {
-			return nil, err
-		}
-		err = kube.ClaimSandboxSlot(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, pod.Name, s.ctrlSpec.MaxSandboxes)
-		if err == nil {
-			return pod, nil
-		}
-		lastErr = err
-		s.log.Info("controller seat claim retry", "pod", pod.Name, "err", err)
-	}
-	return nil, fmt.Errorf("could not claim controller seat after %d attempts: %w", maxAttempts, lastErr)
-}
-
 func (s *Server) handleSandboxGet(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sandboxId"))
 	if id == "" {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
 		return
 	}
-	route, ok, err := s.store.Get(r.Context(), id)
+	sandbox, err := s.lookupSandbox(r.Context(), id)
 	if err != nil {
 		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "")
 		return
 	}
-	if !ok {
+	if sandbox == nil {
 		s.jsonErr(w, http.StatusNotFound, "not found", "")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, &api.SandboxResponseBody{
-		SandboxID: id,
-		Runtime:   "microsandbox",
-		PodRef:    api.PodRef{Namespace: s.cfg.SandboxNamespace, Name: route.ControllerPodName},
-	})
+	s.writeJSON(w, http.StatusOK, s.sandboxToResponse(sandbox))
 }
 
 func (s *Server) handleSandboxDelete(w http.ResponseWriter, r *http.Request) {
@@ -431,56 +331,160 @@ func (s *Server) handleSandboxDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	route, ok, err := s.store.Get(ctx, id)
+	sandbox, err := s.lookupSandbox(ctx, id)
 	if err != nil {
 		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
 		return
 	}
-	if !ok {
+	if sandbox == nil {
 		s.jsonErr(w, http.StatusNotFound, "sandbox not found", "")
 		return
 	}
 
-	baseURL := s.controllerURL(route)
-
-	if err := s.ctrlClient.DeleteSandbox(ctx, baseURL, DeleteSandboxReq{SandboxID: id}); err != nil {
-		s.jsonErr(w, http.StatusBadGateway, err.Error(), "delete_sandbox")
+	if err := s.k8sClient.Delete(ctx, sandbox); err != nil {
+		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "delete")
 		return
 	}
-
-	_ = s.store.Delete(ctx, id)
-	_ = kube.IncrementSandboxCount(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, route.ControllerPodName, -1)
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) StartReaper(ctx context.Context, wg *sync.WaitGroup) {
-	if s.cfg.ReaperEvery <= 0 {
-		return
+func (s *Server) lookupSandbox(ctx context.Context, sandboxID string) (*boxyv1.Sandbox, error) {
+	var list boxyv1.SandboxList
+	if err := s.k8sReader.List(ctx, &list,
+		client.InNamespace(s.cfg.SandboxNamespace),
+		client.MatchingLabels{boxyv1.LabelSandboxID: sandboxID},
+	); err != nil {
+		return nil, err
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		t := time.NewTicker(s.cfg.ReaperEvery)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				n, err := session.ReapOnce(context.Background(), s.cfg.Kube, s.cfg.SandboxNamespace)
-				if err != nil {
-					s.log.Error("reaper", "err", err)
-				} else if n > 0 {
-					s.log.Info("reaper deleted pods", "count", n)
-				}
-				m, err := kube.ReapControllerPods(context.Background(), s.cfg.Kube, s.cfg.SandboxNamespace)
-				if err != nil {
-					s.log.Error("controller reaper", "err", err)
-				} else if m > 0 {
-					s.log.Info("reaper deleted controller pods", "count", m)
-				}
+	for i := range list.Items {
+		sb := &list.Items[i]
+		if sb.Spec.SandboxID == sandboxID && sb.DeletionTimestamp.IsZero() {
+			return sb, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Server) createSandboxFromBody(ctx context.Context, body *api.SandboxCreateBody) (*api.SandboxResponseBody, error) {
+	sandbox := &boxyv1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      body.SandboxID,
+			Namespace: s.cfg.SandboxNamespace,
+			Labels: map[string]string{
+				boxyv1.LabelSandboxID: body.SandboxID,
+				api.LabelSessionID:    body.SessionID,
+				api.LabelOwner:        body.Owner,
+			},
+		},
+		Spec: boxyv1.SandboxSpec{
+			SandboxID:       body.SandboxID,
+			SessionID:       body.SessionID,
+			Owner:           body.Owner,
+			TTLSeconds:      body.TTLSeconds,
+			Env:             body.Env,
+			AllowedBinaries: body.AllowedBinaries,
+			VM:              body.VM,
+			Network:         body.Network,
+			Volumes:         body.Volumes,
+			Patches:         body.Patches,
+		},
+	}
+
+	if err := s.k8sClient.Create(ctx, sandbox); err != nil {
+		return nil, fmt.Errorf("create sandbox CR: %w", err)
+	}
+
+	timeout := s.cfg.CreateTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+
+	for {
+		if err := s.k8sReader.Get(ctx, client.ObjectKeyFromObject(sandbox), sandbox); err == nil {
+			if sandbox.Status.Phase == boxyv1.SandboxPhaseRunning {
+				return s.sandboxToResponse(sandbox), nil
+			}
+			if sandbox.Status.Phase == boxyv1.SandboxPhaseTerminated {
+				return nil, fmt.Errorf("sandbox terminated: %s", sandbox.Status.Message)
 			}
 		}
-	}()
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout waiting for sandbox to become running")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func (s *Server) sandboxToResponse(sb *boxyv1.Sandbox) *api.SandboxResponseBody {
+	phase := string(sb.Status.Phase)
+	if phase == "" {
+		phase = "Pending"
+	}
+	return &api.SandboxResponseBody{
+		SandboxID: sb.Spec.SandboxID,
+		SessionID: sb.Spec.SessionID,
+		Owner:     sb.Spec.Owner,
+		Runtime:   "microsandbox",
+		PodRef:    api.PodRef{Namespace: s.cfg.SandboxNamespace, Name: sb.Status.ControllerPod},
+		Phase:     phase,
+		Ready:     sb.Status.Phase == boxyv1.SandboxPhaseRunning,
+	}
+}
+
+func (s *Server) controllerURL(sandbox *boxyv1.Sandbox) string {
+	scheme := "https"
+	if s.cfg.MTLSDisabled {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, sandbox.Status.ControllerAddress, sandbox.Status.Port)
+}
+
+func (s *Server) touchLastExec(sandbox *boxyv1.Sandbox) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	patch := client.MergeFrom(sandbox.DeepCopy())
+	now := metav1.Now()
+	sandbox.Status.LastExecAt = &now
+	if err := s.k8sClient.Status().Patch(ctx, sandbox, patch); err != nil {
+		s.log.Warn("failed to patch lastExecAt", "sandbox", sandbox.Name, "err", err)
+	}
+}
+
+// EnsureDefaultSandbox creates the default sandbox CR if it doesn't exist.
+func (s *Server) EnsureDefaultSandbox(ctx context.Context) error {
+	if !s.cfg.DefaultSandboxEnabled || s.cfg.DefaultSandboxConfig == nil {
+		return nil
+	}
+	id := s.cfg.DefaultSandboxConfig.SandboxID
+	existing, _ := s.lookupSandbox(ctx, id)
+	if existing != nil {
+		return nil
+	}
+	_, err := s.createSandboxFromBody(ctx, s.cfg.DefaultSandboxConfig)
+	if err != nil {
+		return fmt.Errorf("create default sandbox: %w", err)
+	}
+	s.log.Info("default sandbox created", "sandboxId", id)
+	return nil
+}
+
+func (s *Server) resolveDefaultSandboxID(ctx context.Context) (string, error) {
+	if !s.cfg.DefaultSandboxEnabled || s.cfg.DefaultSandboxConfig == nil {
+		return "", fmt.Errorf("default sandbox is disabled")
+	}
+	id := s.cfg.DefaultSandboxConfig.SandboxID
+	existing, _ := s.lookupSandbox(ctx, id)
+	if existing != nil && existing.Status.Phase == boxyv1.SandboxPhaseRunning {
+		return id, nil
+	}
+	if err := s.EnsureDefaultSandbox(ctx); err != nil {
+		return "", err
+	}
+	return id, nil
 }

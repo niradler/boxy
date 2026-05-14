@@ -7,16 +7,8 @@ import (
 )
 
 const (
-	LabelSandboxID     = "boxy.dev/sandbox-id"
-	LabelSessionID     = "boxy.dev/session-id"
-	LabelOwner         = "boxy.dev/owner"
-	LabelManagedBy     = "boxy.dev/managed-by"
-	LabelControllerPod = "boxy.dev/controller"
-
-	AnnotationCreatedAt        = "boxy.dev/created-at"
-	AnnotationExpiresAtRFC3339 = "boxy.dev/expires-at"
-	AnnotationSandboxCount     = "boxy.dev/sandbox-count"
-	AnnotationControllerPort   = "boxy.dev/controller-port"
+	LabelSessionID = "boxy.dev/session-id"
+	LabelOwner     = "boxy.dev/owner"
 )
 
 func ValidateExecRequest(

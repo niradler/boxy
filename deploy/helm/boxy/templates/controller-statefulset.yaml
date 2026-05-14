@@ -1,0 +1,140 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "boxy.fullname" . }}-ctrl
+  namespace: {{ include "boxy.sandboxNamespace" . }}
+  labels:
+    app: boxy-controller
+spec:
+  serviceName: {{ include "boxy.fullname" . }}-ctrl-headless
+  replicas: {{ .Values.controllerReplicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: boxy-controller
+  template:
+    metadata:
+      labels:
+        app: boxy-controller
+        boxy.dev/managed-by: boxy
+        boxy.dev/controller: "true"
+    spec:
+      serviceAccountName: {{ .Values.controllerServiceAccount }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: controller
+          image: {{ .Values.controllerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.controllerPort }}
+          env:
+            - name: BOXY_CONTROLLER_PORT
+              value: {{ .Values.controllerPort | quote }}
+            - name: BOXY_MAX_SANDBOXES
+              value: {{ .Values.maxSandboxesPerController | quote }}
+            - name: BOXY_MTLS_DISABLED
+              value: {{ .Values.mtlsDisabled | quote }}
+            - name: BOXY_TLS_CERT_PATH
+              value: "/tls/tls.crt"
+            - name: BOXY_TLS_KEY_PATH
+              value: "/tls/tls.key"
+            - name: BOXY_TLS_CA_PATH
+              value: "/tls/ca.crt"
+            - name: RUST_LOG
+              value: {{ .Values.vmLogLevel | default "warn" | quote }}
+            {{- if .Values.vmLogLevel }}
+            - name: BOXY_VM_LOG_LEVEL
+              value: {{ .Values.vmLogLevel | quote }}
+            {{- end }}
+            {{- if gt (int .Values.vmMetricsIntervalMs) 0 }}
+            - name: BOXY_VM_METRICS_INTERVAL_MS
+              value: {{ .Values.vmMetricsIntervalMs | quote }}
+            {{- end }}
+            {{- if .Values.vmPullPolicy }}
+            - name: BOXY_VM_PULL_POLICY
+              value: {{ .Values.vmPullPolicy | quote }}
+            {{- end }}
+            {{- if .Values.libkrunfwPath }}
+            - name: BOXY_LIBKRUNFW_PATH
+              value: {{ .Values.libkrunfwPath | quote }}
+            {{- end }}
+          {{- if eq .Values.kvmMode "device" }}
+          resources:
+            limits:
+              devices.kubevirt.io/kvm: "1"
+            {{- with .Values.resourcesController }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- else }}
+          {{- with .Values.resourcesController }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: {{ eq .Values.kvmMode "hostpath" }}
+            {{- if eq .Values.kvmMode "hostpath" }}
+            privileged: true
+            {{- end }}
+            capabilities:
+              drop: ["ALL"]
+          {{- if .Values.mtlsDisabled }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- else }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 15
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- end }}
+          volumeMounts:
+            {{- if eq .Values.kvmMode "hostpath" }}
+            - name: dev-kvm
+              mountPath: /dev/kvm
+            {{- end }}
+            {{- if not .Values.mtlsDisabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if eq .Values.kvmMode "hostpath" }}
+        - name: dev-kvm
+          hostPath:
+            path: /dev/kvm
+            type: CharDevice
+        {{- end }}
+        {{- if not .Values.mtlsDisabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "boxy.fullname" . }}-mtls-controller
+        {{- end }}
+      {{- if .Values.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret }}
+      {{- end }}

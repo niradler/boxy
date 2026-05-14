@@ -24,16 +24,22 @@ resourcesRouter:
     cpu: "1"
     memory: 512Mi
 
-reaperIntervalSeconds: 30
-
 routerServiceAccount: boxy-router
 
-# --- Microsandbox controller (bin-packing model) ---
+# --- Microsandbox controller (StatefulSet) ---
 controllerImage: boxy-controller:e2e
 controllerPort: 8080
+controllerReplicas: 1
 maxSandboxesPerController: 20
-controllerTTLSeconds: 3600
 controllerServiceAccount: boxy-controller
+
+resourcesController:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
 
 # mTLS between router and controller. Set mtlsDisabled: true for local dev.
 mtlsDisabled: false
@@ -77,3 +83,10 @@ defaultSandbox:
 #   hostpath — mount /dev/kvm via hostPath + run privileged (kind / clusters
 #              without a device plugin; requires PSA "privileged" on the namespace)
 kvmMode: "device"
+
+# --- Sandbox Operator ---
+imageOperator: boxy-operator:e2e
+operatorServiceAccount: boxy-operator
+terminatedRetentionSeconds: 3600
+maxControllerReplicas: 50
+minControllerReplicas: 1

@@ -46,18 +46,8 @@ spec:
                   key: router-token
             - name: BOXY_SANDBOX_NAMESPACE
               value: {{ include "boxy.sandboxNamespace" . | quote }}
-            - name: BOXY_REAPER_INTERVAL_SECONDS
-              value: {{ .Values.reaperIntervalSeconds | quote }}
-            - name: BOXY_CONTROLLER_IMAGE
-              value: {{ .Values.controllerImage | quote }}
             - name: BOXY_CONTROLLER_PORT
               value: {{ .Values.controllerPort | quote }}
-            - name: BOXY_CONTROLLER_TTL_SECONDS
-              value: {{ .Values.controllerTTLSeconds | quote }}
-            - name: BOXY_MAX_SANDBOXES_PER_CONTROLLER
-              value: {{ .Values.maxSandboxesPerController | quote }}
-            - name: BOXY_CONTROLLER_SERVICE_ACCOUNT
-              value: {{ .Values.controllerServiceAccount | quote }}
             - name: BOXY_MTLS_DISABLED
               value: {{ .Values.mtlsDisabled | quote }}
             - name: BOXY_TLS_CA_PATH
@@ -66,18 +56,6 @@ spec:
               value: "/tls/tls.crt"
             - name: BOXY_TLS_CLIENT_KEY_PATH
               value: "/tls/tls.key"
-            - name: BOXY_VM_LOG_LEVEL
-              value: {{ .Values.vmLogLevel | quote }}
-            - name: BOXY_VM_METRICS_INTERVAL_MS
-              value: {{ .Values.vmMetricsIntervalMs | quote }}
-            - name: BOXY_VM_PULL_POLICY
-              value: {{ .Values.vmPullPolicy | quote }}
-            - name: BOXY_LIBKRUNFW_PATH
-              value: {{ .Values.libkrunfwPath | quote }}
-            - name: BOXY_KVM_MODE
-              value: {{ .Values.kvmMode | quote }}
-            - name: BOXY_MTLS_CONTROLLER_SECRET
-              value: {{ include "boxy.fullname" . }}-mtls-controller
             - name: BOXY_DEFAULT_SANDBOX_ENABLED
               value: {{ .Values.defaultSandbox.enabled | quote }}
             {{- if .Values.defaultSandbox.enabled }}

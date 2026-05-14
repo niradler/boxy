@@ -2,44 +2,85 @@ package router
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"testing"
 
-	"k8s.io/client-go/kubernetes/fake"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	boxyv1 "boxy.dev/boxy/api/v1alpha1"
 	"boxy.dev/boxy/internal/api"
-	"boxy.dev/boxy/internal/kube"
+	ctrlclient "boxy.dev/boxy/internal/controller"
 )
 
-func newTestServer(t *testing.T, kc *fake.Clientset, controllerURL string, opts ...func(*Config)) *Server {
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = boxyv1.AddToScheme(s)
+	return s
+}
+
+func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, opts ...func(*Config)) *Server {
 	t.Helper()
 	u, err := url.Parse(controllerURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	port, _ := strconv.Atoi(u.Port())
+
+	scheme := testScheme()
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).WithStatusSubresource(&boxyv1.Sandbox{}).Build()
+
 	cfg := Config{
-		AuthToken:                 "test-token",
-		SandboxNamespace:          "default",
-		MaxConcurrency:            10,
-		MaxBodyBytes:              1 << 20,
-		MaxTimeoutSec:             3600,
-		MaxSandboxTTLSec:          86400,
-		Kube:                      kc,
-		ControllerPort:            int32(port),
-		ControllerTTLSec:          3600,
-		MaxSandboxesPerController: 20,
-		MTLSDisabled:              true,
+		AuthToken:        "test-token",
+		SandboxNamespace: "default",
+		MaxConcurrency:   10,
+		MaxBodyBytes:     1 << 20,
+		MaxTimeoutSec:    3600,
+		MaxSandboxTTLSec: 86400,
+		ControllerPort:   int32(port),
+		MTLSDisabled:     true,
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return NewServer(cfg)
+
+	return &Server{
+		cfg:       cfg,
+		log:       slog.Default(),
+		sem:       make(chan struct{}, cfg.MaxConcurrency),
+		k8sClient: fc,
+		k8sReader: fc,
+		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
+			MTLSDisabled: true,
+		}),
+	}
+}
+
+func testSandbox(name, sandboxID, ctrlAddr string, port int32, phase boxyv1.SandboxPhase) *boxyv1.Sandbox {
+	return &boxyv1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels:    map[string]string{boxyv1.LabelSandboxID: sandboxID},
+		},
+		Spec: boxyv1.SandboxSpec{
+			SandboxID: sandboxID,
+			SessionID: "test-session",
+			Owner:     "test",
+		},
+		Status: boxyv1.SandboxStatus{
+			Phase:             phase,
+			ControllerPod:     "ctrl-0",
+			ControllerAddress: ctrlAddr,
+			Port:              port,
+		},
+	}
 }
 
 type rpcResp struct {
@@ -90,14 +131,6 @@ var initializeParams = map[string]any{
 	"capabilities":    map[string]any{},
 }
 
-func mcpInitialize(t *testing.T, handler http.Handler) {
-	t.Helper()
-	code, resp := mcpPost(t, handler, "initialize", initializeParams, "")
-	if code != http.StatusOK || resp.Error != nil {
-		t.Fatalf("initialize failed: code=%d err=%+v", code, resp.Error)
-	}
-}
-
 func parseToolResult(t *testing.T, raw json.RawMessage) toolResult {
 	t.Helper()
 	var tr toolResult
@@ -108,10 +141,9 @@ func parseToolResult(t *testing.T, raw json.RawMessage) toolResult {
 }
 
 func TestMCP_Initialize(t *testing.T) {
-	kc := fake.NewSimpleClientset()
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer ctrl.Close()
-	srv := newTestServer(t, kc, ctrl.URL)
+	srv := newTestServer(t, ctrl.URL, nil)
 	handler := srv.Handler()
 
 	code, resp := mcpPost(t, handler, "initialize", initializeParams, "")
@@ -140,10 +172,9 @@ func TestMCP_Initialize(t *testing.T) {
 }
 
 func TestMCP_ToolsList(t *testing.T) {
-	kc := fake.NewSimpleClientset()
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer ctrl.Close()
-	srv := newTestServer(t, kc, ctrl.URL)
+	srv := newTestServer(t, ctrl.URL, nil)
 	handler := srv.Handler()
 
 	code, resp := mcpPost(t, handler, "tools/list", nil, "")
@@ -175,13 +206,9 @@ func TestMCP_ToolsCall_BashSuccess(t *testing.T) {
 	defer ctrl.Close()
 	u, _ := url.Parse(ctrl.URL)
 	port, _ := strconv.Atoi(u.Port())
-	pod := newControllerPod("ctrl-1", u.Hostname(), int32(port))
-	kc := fake.NewSimpleClientset(pod)
-	srv := newTestServer(t, kc, ctrl.URL)
-	_ = srv.store.Set(context.Background(), "sb-1", kube.SandboxRoute{
-		ControllerPodName: "ctrl-1", ControllerIP: u.Hostname(), Port: int32(port),
-	})
+	sb := testSandbox("sb-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
 
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb})
 	handler := srv.Handler()
 	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
 		"name":      "bash",
@@ -214,16 +241,13 @@ func TestMCP_ToolsCall_UsesDefaultSandbox(t *testing.T) {
 	defer ctrl.Close()
 	u, _ := url.Parse(ctrl.URL)
 	port, _ := strconv.Atoi(u.Port())
-	pod := newControllerPod("ctrl-1", u.Hostname(), int32(port))
-	kc := fake.NewSimpleClientset(pod)
-	srv := newTestServer(t, kc, ctrl.URL, func(cfg *Config) {
+	sb := testSandbox("default", "default", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb}, func(cfg *Config) {
 		cfg.DefaultSandboxEnabled = true
 		cfg.DefaultSandboxConfig = &api.SandboxCreateBody{
 			SandboxID: "default", SessionID: "default-box", Owner: "system", TTLSeconds: 86400,
 		}
-	})
-	_ = srv.store.Set(context.Background(), "default", kube.SandboxRoute{
-		ControllerPodName: "ctrl-1", ControllerIP: u.Hostname(), Port: int32(port),
 	})
 
 	handler := srv.Handler()
@@ -248,10 +272,9 @@ func TestMCP_ToolsCall_UsesDefaultSandbox(t *testing.T) {
 }
 
 func TestMCP_ToolsCall_NoSandbox_DefaultDisabled(t *testing.T) {
-	kc := fake.NewSimpleClientset()
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer ctrl.Close()
-	srv := newTestServer(t, kc, ctrl.URL)
+	srv := newTestServer(t, ctrl.URL, nil)
 	handler := srv.Handler()
 
 	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
@@ -272,10 +295,9 @@ func TestMCP_ToolsCall_NoSandbox_DefaultDisabled(t *testing.T) {
 }
 
 func TestMCP_Auth(t *testing.T) {
-	kc := fake.NewSimpleClientset()
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer ctrl.Close()
-	srv := newTestServer(t, kc, ctrl.URL)
+	srv := newTestServer(t, ctrl.URL, nil)
 	handler := srv.Handler()
 
 	body, _ := json.Marshal(map[string]any{

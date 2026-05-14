@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -19,23 +18,51 @@ func main() {
 		slog.Error("config", "err", err)
 		os.Exit(1)
 	}
-	srv := router.NewServer(*cfg)
+
+	scheme := router.NewScheme()
+
+	k8sCache, err := router.BuildK8sCache(scheme, cfg.SandboxNamespace)
+	if err != nil {
+		slog.Error("k8s cache", "err", err)
+		os.Exit(1)
+	}
+
+	k8sClient, err := router.BuildK8sClient(scheme)
+	if err != nil {
+		slog.Error("k8s client", "err", err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		if err := k8sCache.Start(ctx); err != nil {
+			slog.Error("cache start failed", "err", err)
+			stop()
+		}
+	}()
+
+	if !k8sCache.WaitForCacheSync(ctx) {
+		slog.Error("cache sync failed")
+		os.Exit(1)
+	}
+	slog.Info("informer cache synced")
+
+	srv := router.NewServer(*cfg, k8sClient, k8sCache)
 	mux := srv.Handler()
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	var wg sync.WaitGroup
-	srv.StartReaper(ctx, &wg)
+
 	startupCtx, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
-	srv.StartupSync(startupCtx)
 	if err := srv.EnsureDefaultSandbox(startupCtx); err != nil {
 		slog.Warn("default sandbox creation on startup failed (will retry lazily)", "err", err)
 	}
 	cancelStartup()
+
 	go func() {
 		slog.Info("listening", "addr", cfg.ListenAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -43,9 +70,9 @@ func main() {
 			stop()
 		}
 	}()
+
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
-	wg.Wait()
 }

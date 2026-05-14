@@ -1,0 +1,303 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sandboxes.boxy.dev
+  annotations:
+    controller-gen.kubebuilder.io/version: (devel)
+spec:
+  group: boxy.dev
+  names:
+    kind: Sandbox
+    listKind: SandboxList
+    plural: sandboxes
+    singular: sandbox
+    shortNames:
+      - sbx
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: ".status.phase"
+        - name: SandboxID
+          type: string
+          jsonPath: ".spec.sandboxId"
+        - name: Controller
+          type: string
+          jsonPath: ".status.controllerPod"
+        - name: Age
+          type: date
+          jsonPath: ".metadata.creationTimestamp"
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: Sandbox is a single sandbox VM instance managed by the boxy operator.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - sandboxId
+                - sessionId
+                - owner
+              properties:
+                sandboxId:
+                  type: string
+                  minLength: 1
+                  maxLength: 253
+                sessionId:
+                  type: string
+                  minLength: 1
+                owner:
+                  type: string
+                  minLength: 1
+                ttlSeconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 604800
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  x-kubernetes-validations:
+                    - rule: "self.all(k, !k.startsWith('BOXY_') && !k.startsWith('KUBERNETES_'))"
+                      message: "env keys starting with BOXY_ or KUBERNETES_ are reserved"
+                allowedBinaries:
+                  type: array
+                  items:
+                    type: string
+                vm:
+                  type: object
+                  properties:
+                    memoryMb:
+                      type: integer
+                      minimum: 64
+                      maximum: 65536
+                    vcpus:
+                      type: integer
+                      minimum: 1
+                      maximum: 64
+                    workdir:
+                      type: string
+                    shell:
+                      type: string
+                    hostname:
+                      type: string
+                    user:
+                      type: string
+                    maxDurationSec:
+                      type: integer
+                      minimum: 0
+                    idleTimeoutSec:
+                      type: integer
+                      minimum: 0
+                    rlimits:
+                      type: array
+                      items:
+                        type: object
+                        required: [resource, soft, hard]
+                        properties:
+                          resource:
+                            type: string
+                          soft:
+                            type: integer
+                            format: int64
+                          hard:
+                            type: integer
+                            format: int64
+                    scripts:
+                      type: array
+                      items:
+                        type: object
+                        required: [name, content]
+                        properties:
+                          name:
+                            type: string
+                          content:
+                            type: string
+                network:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    allowInternetAccess:
+                      type: boolean
+                    allowedEgressDomains:
+                      type: array
+                      items:
+                        type: string
+                    rules:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          direction:
+                            type: string
+                            enum: [ingress, egress]
+                          action:
+                            type: string
+                            enum: [allow, deny]
+                          protocols:
+                            type: array
+                            items:
+                              type: string
+                          ports:
+                            type: array
+                            items:
+                              type: integer
+                          portRanges:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                start:
+                                  type: integer
+                                end:
+                                  type: integer
+                          domains:
+                            type: array
+                            items:
+                              type: string
+                          domainSuffixes:
+                            type: array
+                            items:
+                              type: string
+                          cidrs:
+                            type: array
+                            items:
+                              type: string
+                          groups:
+                            type: array
+                            items:
+                              type: string
+                    ports:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          hostPort:
+                            type: integer
+                          guestPort:
+                            type: integer
+                          protocol:
+                            type: string
+                    dns:
+                      type: object
+                      properties:
+                        nameservers:
+                          type: array
+                          items:
+                            type: string
+                        rebindProtection:
+                          type: boolean
+                        queryTimeoutMs:
+                          type: integer
+                    secrets:
+                      type: array
+                      items:
+                        type: object
+                        required: [envVar, value]
+                        properties:
+                          envVar:
+                            type: string
+                          value:
+                            type: string
+                          allowedHosts:
+                            type: array
+                            items:
+                              type: string
+                          allowedHostPatterns:
+                            type: array
+                            items:
+                              type: string
+                          allowAnyHostDangerous:
+                            type: boolean
+                    maxConnections:
+                      type: integer
+                    trustHostCAs:
+                      type: boolean
+                volumes:
+                  type: array
+                  items:
+                    type: object
+                    required: [guestPath, type]
+                    properties:
+                      guestPath:
+                        type: string
+                      type:
+                        type: string
+                      hostPath:
+                        type: string
+                      name:
+                        type: string
+                      sizeMb:
+                        type: integer
+                      readonly:
+                        type: boolean
+                patches:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, path]
+                    properties:
+                      type:
+                        type: string
+                      path:
+                        type: string
+                      content:
+                        type: string
+                      bytes:
+                        type: string
+                      hostPath:
+                        type: string
+                      target:
+                        type: string
+                      mode:
+                        type: integer
+                      replace:
+                        type: boolean
+                retentionPeriod:
+                  type: string
+                  description: "Duration string (e.g. 1h, 30m). How long to retain the CR after termination."
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Creating
+                    - Running
+                    - Deleting
+                    - Terminated
+                controllerPod:
+                  type: string
+                controllerAddress:
+                  type: string
+                port:
+                  type: integer
+                  format: int32
+                createdAt:
+                  type: string
+                  format: date-time
+                expiresAt:
+                  type: string
+                  format: date-time
+                terminatedAt:
+                  type: string
+                  format: date-time
+                lastExecAt:
+                  type: string
+                  format: date-time
+                message:
+                  type: string

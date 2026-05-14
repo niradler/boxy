@@ -4,12 +4,12 @@ metadata:
   name: boxy-router
   namespace: {{ include "boxy.sandboxNamespace" . }}
 rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["boxy.dev"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["boxy.dev"]
+    resources: ["sandboxes/status"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

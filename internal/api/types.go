@@ -50,27 +50,27 @@ type VMScript struct {
 
 // SandboxNetworkConfig configures all VM-level networking via microsandbox.
 type SandboxNetworkConfig struct {
-	Enabled              *bool            `json:"enabled,omitempty"`
-	AllowInternetAccess  bool             `json:"allowInternetAccess,omitempty"`
-	AllowedEgressDomains []string         `json:"allowedEgressDomains,omitempty"`
-	Rules                []NetworkRule    `json:"rules,omitempty"`
-	Ports                []PortMapping    `json:"ports,omitempty"`
-	DNS                  *DNSConfig       `json:"dns,omitempty"`
-	Secrets              []NetworkSecret  `json:"secrets,omitempty"`
-	MaxConnections       int              `json:"maxConnections,omitempty"`
-	TrustHostCAs         bool             `json:"trustHostCAs,omitempty"`
+	Enabled              *bool           `json:"enabled,omitempty"`
+	AllowInternetAccess  bool            `json:"allowInternetAccess,omitempty"`
+	AllowedEgressDomains []string        `json:"allowedEgressDomains,omitempty"`
+	Rules                []NetworkRule   `json:"rules,omitempty"`
+	Ports                []PortMapping   `json:"ports,omitempty"`
+	DNS                  *DNSConfig      `json:"dns,omitempty"`
+	Secrets              []NetworkSecret `json:"secrets,omitempty"`
+	MaxConnections       int             `json:"maxConnections,omitempty"`
+	TrustHostCAs         bool            `json:"trustHostCAs,omitempty"`
 }
 
 type NetworkRule struct {
-	Direction      string   `json:"direction"`
-	Action         string   `json:"action"`
-	Protocols      []string `json:"protocols,omitempty"`
-	Ports          []uint16 `json:"ports,omitempty"`
+	Direction      string      `json:"direction"`
+	Action         string      `json:"action"`
+	Protocols      []string    `json:"protocols,omitempty"`
+	Ports          []uint16    `json:"ports,omitempty"`
 	PortRanges     []PortRange `json:"portRanges,omitempty"`
-	Domains        []string `json:"domains,omitempty"`
-	DomainSuffixes []string `json:"domainSuffixes,omitempty"`
-	CIDRs          []string `json:"cidrs,omitempty"`
-	Groups         []string `json:"groups,omitempty"`
+	Domains        []string    `json:"domains,omitempty"`
+	DomainSuffixes []string    `json:"domainSuffixes,omitempty"`
+	CIDRs          []string    `json:"cidrs,omitempty"`
+	Groups         []string    `json:"groups,omitempty"`
 }
 
 type PortRange struct {
@@ -91,11 +91,11 @@ type DNSConfig struct {
 }
 
 type NetworkSecret struct {
-	EnvVar              string   `json:"envVar"`
-	Value               string   `json:"value"`
-	AllowedHosts        []string `json:"allowedHosts,omitempty"`
-	AllowedHostPatterns []string `json:"allowedHostPatterns,omitempty"`
-	AllowAnyHostDangerous bool  `json:"allowAnyHostDangerous,omitempty"`
+	EnvVar                string   `json:"envVar"`
+	Value                 string   `json:"value"`
+	AllowedHosts          []string `json:"allowedHosts,omitempty"`
+	AllowedHostPatterns   []string `json:"allowedHostPatterns,omitempty"`
+	AllowAnyHostDangerous bool     `json:"allowAnyHostDangerous,omitempty"`
 }
 
 type VolumeMount struct {

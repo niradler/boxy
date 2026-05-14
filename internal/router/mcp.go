@@ -8,7 +8,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"boxy.dev/boxy/internal/kube"
+	boxyv1 "boxy.dev/boxy/api/v1alpha1"
+	ctrlclient "boxy.dev/boxy/internal/controller"
 )
 
 type bashParams struct {
@@ -78,31 +79,27 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(params.TimeoutSeconds)*time.Second+5*time.Second)
 	defer cancel()
 
-	route, ok, err := s.store.Get(ctx, sandboxID)
+	sandbox, err := s.lookupSandbox(ctx, sandboxID)
 	if err != nil {
 		return toolError("store error: " + err.Error())
 	}
-	if !ok {
+	if sandbox == nil || sandbox.Status.Phase != boxyv1.SandboxPhaseRunning {
 		return toolError(fmt.Sprintf("sandbox %q not found", sandboxID))
 	}
 
-	baseURL := s.controllerURL(route)
+	baseURL := s.controllerURL(sandbox)
 
-	result, err := s.ctrlClient.Exec(ctx, baseURL, ExecReq{
+	result, err := s.ctrlClient.Exec(ctx, baseURL, ctrlclient.ExecReq{
 		SandboxID:      sandboxID,
 		Command:        "sh",
 		Args:           []string{"-c", params.Command},
 		TimeoutSeconds: params.TimeoutSeconds,
 	})
 	if err != nil {
-		if IsStaleRouteError(err) {
-			s.store.InvalidateCache(sandboxID)
-			s.sync.TriggerAsync("mcp-exec-stale-route")
-		}
 		return toolError("exec error: " + err.Error())
 	}
 
-	_ = kube.RefreshControllerTTL(ctx, s.cfg.Kube, s.cfg.SandboxNamespace, route.ControllerPodName, s.ctrlSpec.TTLSeconds)
+	go s.touchLastExec(sandbox)
 
 	text := result.Stdout
 	if result.Stderr != "" {
@@ -122,12 +119,4 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 		return toolError(text)
 	}
 	return toolText(text)
-}
-
-func (s *Server) controllerURL(route kube.SandboxRoute) string {
-	scheme := "https"
-	if s.cfg.MTLSDisabled {
-		scheme = "http"
-	}
-	return fmt.Sprintf("%s://%s:%d", scheme, route.ControllerIP, route.Port)
 }
