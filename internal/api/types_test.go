@@ -20,7 +20,6 @@ func TestSandboxCreateBody_FullVMSurface(t *testing.T) {
             "scripts":[{"name":"setup","content":"#!/bin/sh\necho ready"}]
         },
         "network":{
-            "allowedEgressDomains":["s3.amazonaws.com"],
             "ports":[{"hostPort":8080,"guestPort":80,"protocol":"tcp"}],
             "dns":{"nameservers":["1.1.1.1:53"],"queryTimeoutMs":3000},
             "secrets":[{"envVar":"AWS_TOKEN","value":"secret","allowedHosts":["sts.amazonaws.com"]}],
@@ -41,9 +40,6 @@ func TestSandboxCreateBody_FullVMSurface(t *testing.T) {
 	}
 	if len(b.VM.Scripts) != 1 || b.VM.Scripts[0].Name != "setup" {
 		t.Fatalf("Scripts: %v", b.VM.Scripts)
-	}
-	if b.Network == nil || len(b.Network.AllowedEgressDomains) != 1 {
-		t.Fatalf("Network: %+v", b.Network)
 	}
 	if len(b.Network.Ports) != 1 || b.Network.Ports[0].HostPort != 8080 {
 		t.Fatalf("Ports: %v", b.Network.Ports)

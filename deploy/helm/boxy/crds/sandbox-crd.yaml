@@ -132,10 +132,6 @@ spec:
                       type: boolean
                     allowInternetAccess:
                       type: boolean
-                    allowedEgressDomains:
-                      type: array
-                      items:
-                        type: string
                     rules:
                       type: array
                       items:

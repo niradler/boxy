@@ -159,10 +159,6 @@ func deepCopyNetworkConfig(in, out *api.SandboxNetworkConfig) {
 		b := *in.Enabled
 		out.Enabled = &b
 	}
-	if in.AllowedEgressDomains != nil {
-		out.AllowedEgressDomains = make([]string, len(in.AllowedEgressDomains))
-		copy(out.AllowedEgressDomains, in.AllowedEgressDomains)
-	}
 	if in.Rules != nil {
 		out.Rules = make([]api.NetworkRule, len(in.Rules))
 		for i := range in.Rules {

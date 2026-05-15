@@ -25,6 +25,7 @@ type ExecResponseBody struct {
 // VMConfig configures the MicroVM runtime (passed to microsandbox).
 
 type VMConfig struct {
+	Image          string     `json:"image,omitempty"`
 	MemoryMB       int        `json:"memoryMb,omitempty"`
 	VCPUs          int        `json:"vcpus,omitempty"`
 	Workdir        string     `json:"workdir,omitempty"`
@@ -35,6 +36,8 @@ type VMConfig struct {
 	IdleTimeoutSec int        `json:"idleTimeoutSec,omitempty"`
 	Rlimits        []VMRlimit `json:"rlimits,omitempty"`
 	Scripts        []VMScript `json:"scripts,omitempty"`
+	SeccompString  string     `json:"seccompString,omitempty"`
+	CloneNewTime   bool       `json:"cloneNewTime,omitempty"`
 }
 
 type VMRlimit struct {
@@ -48,17 +51,27 @@ type VMScript struct {
 	Content string `json:"content"`
 }
 
+// MacvlanConfig configures a MACVLAN interface attached to the sandbox network namespace.
+type MacvlanConfig struct {
+	Interface string `json:"interface"`
+	IP        string `json:"ip,omitempty"`
+	Netmask   string `json:"netmask,omitempty"`
+	Gateway   string `json:"gateway,omitempty"`
+	MAC       string `json:"mac,omitempty"`
+}
+
 // SandboxNetworkConfig configures all VM-level networking via microsandbox.
 type SandboxNetworkConfig struct {
-	Enabled              *bool           `json:"enabled,omitempty"`
-	AllowInternetAccess  bool            `json:"allowInternetAccess,omitempty"`
-	AllowedEgressDomains []string        `json:"allowedEgressDomains,omitempty"`
-	Rules                []NetworkRule   `json:"rules,omitempty"`
-	Ports                []PortMapping   `json:"ports,omitempty"`
-	DNS                  *DNSConfig      `json:"dns,omitempty"`
-	Secrets              []NetworkSecret `json:"secrets,omitempty"`
-	MaxConnections       int             `json:"maxConnections,omitempty"`
-	TrustHostCAs         bool            `json:"trustHostCAs,omitempty"`
+	Enabled             *bool          `json:"enabled,omitempty"`
+	AllowInternetAccess bool           `json:"allowInternetAccess,omitempty"`
+	Rules               []NetworkRule  `json:"rules,omitempty"`
+	Ports               []PortMapping  `json:"ports,omitempty"`
+	DNS                 *DNSConfig     `json:"dns,omitempty"`
+	Secrets             []NetworkSecret `json:"secrets,omitempty"`
+	MaxConnections      int            `json:"maxConnections,omitempty"`
+	TrustHostCAs        bool           `json:"trustHostCAs,omitempty"`
+	Macvlan             *MacvlanConfig `json:"macvlan,omitempty"`
+	UsePasta            bool           `json:"usePasta,omitempty"`
 }
 
 type NetworkRule struct {

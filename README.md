@@ -3,7 +3,6 @@
 **Kubernetes-native sandbox runtime.** Run isolated shell commands inside ephemeral Linux environments via a clean HTTP API or MCP — no VMs, no hypervisors, no hardware dependencies.
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](go.mod)
-[![Rust](https://img.shields.io/badge/Rust-1.82+-CE412B?logo=rust)](controller/Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm chart](https://img.shields.io/badge/Helm-v0.0.2-0F1689?logo=helm)](oci://ghcr.io/niradler/charts/boxy)
 
@@ -15,7 +14,7 @@ Each sandbox is an **nsjail** process jail: isolated filesystem, network namespa
 |---|---|---|
 | **boxy-router** | Go | Stateless HTTP frontend — auth, API, MCP server, sandbox CR management |
 | **boxy-operator** | Go | Kubernetes controller — bin-packing, StatefulSet auto-scaling, TTL expiry |
-| **boxy-controller** | Rust | Per-node nsjail daemon — runs actual sandboxes, exposes mTLS HTTP API |
+| **boxy-controller** | Go | Per-node nsjail daemon — runs actual sandboxes, exposes mTLS HTTP API |
 
 ```
 Client --(Bearer)--> [boxy-router  Deployment × N]
@@ -54,7 +53,7 @@ Every sandbox gets:
 - Kubernetes cluster (kind works fine)
 - `kubectl` and `helm` ≥ 3.x
 - Docker for building images
-- Go ≥ 1.26 and Rust ≥ 1.82 for local development
+- Go ≥ 1.26 for local development
 
 ### Install with Helm (OCI registry — recommended)
 
@@ -77,8 +76,10 @@ helm upgrade --install boxy ./deploy/helm/boxy \
 
 ### First API calls
 
+The router accepts any valid Kubernetes ServiceAccount token. Get one for your client SA:
+
 ```bash
-export TOKEN=<your-router-token>
+export TOKEN=$(kubectl create token <your-sa> -n <namespace> --duration=3600s)
 export BASE=http://<router-service>:8080
 
 # Create a sandbox
@@ -126,6 +127,8 @@ Create a sandbox. Returns `201` when the sandbox is `Running`.
 | `memoryMb` | int | Memory cap via cgroup. |
 | `rlimits` | array | `[{ "resource": "nofile", "soft": 1024 }]`. Supported: `as`, `core`, `cpu`, `fsize`, `nofile`, `nproc`, `stack`. |
 | `image` | string | Override rootfs path (must be pre-baked on the controller node). Default: `/rootfs/ubuntu-24.04`. |
+| `seccompString` | string | Kafel/seccomp policy string passed to nsjail. |
+| `cloneNewTime` | bool | Isolate the sandbox in a TIME namespace (Linux ≥ 5.6). |
 
 **`network` fields:**
 
@@ -133,6 +136,8 @@ Create a sandbox. Returns `201` when the sandbox is `Running`.
 |---|---|---|
 | `enabled` | bool | Default `true`. |
 | `allowInternetAccess` | bool | When `true`, disables network namespace isolation (sandbox shares the pod's network). |
+| `macvlan` | object | Clone a MACVLAN interface into the sandbox: `{ "interface": "eth0", "ip": "...", "netmask": "...", "gateway": "...", "mac": "..." }`. |
+| `usePasta` | bool | Use pasta userland networking instead of a network namespace. |
 
 Response: `{ "sandboxId", "sessionId", "owner", "runtime", "phase", "ready" }`. `runtime` is always `"nsjail"`.
 
@@ -164,7 +169,7 @@ Deletes the sandbox and removes its CR.
 | Code | Meaning |
 |---|---|
 | `400` | Bad request (missing required field, invalid JSON, blocked env prefix). |
-| `401` | Missing or invalid bearer token. |
+| `401` | Missing, expired, or invalid bearer token (SA token rejected by TokenReview, or static token mismatch). |
 | `404` | Sandbox not found. |
 | `409` | Sandbox already exists. |
 | `413` | Output cap exceeded. |
@@ -209,13 +214,13 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
 ## Security model
 
-- **Router auth:** `Authorization: Bearer <BOXY_ROUTER_TOKEN>` required on every route. One shared token — no per-caller RBAC.
+- **Router auth:** `Authorization: Bearer <token>` required on every route. Two modes:
+  - **SA token (production):** Any valid Kubernetes ServiceAccount token, validated via the TokenReview API. Caller identity is the K8s `UserInfo` (username + groups). No static secret to manage.
+  - **Static token (dev/e2e):** Set `BOXY_ROUTER_TOKEN`; requests presenting this token are accepted as `dev-token` without a TokenReview call. Omit in production.
+  No per-caller RBAC — all authenticated callers have equal access.
 - **mTLS:** Router and operator dial controllers using a Helm-generated CA with mutual cert verification. No hostname verification; identity is CA membership. Disable with `BOXY_MTLS_DISABLED=true` for local dev.
 - **NetworkPolicy:** Default-deny egress on controller pods (DNS only). Per-sandbox isolation enforced by nsjail network namespaces, not Kubernetes policy.
 - **Controller pod capabilities:** `SYS_ADMIN`, `SETUID`, `SETGID`, `NET_ADMIN`, `SYS_CHROOT`, `MKNOD`, `SETPCAP`. All others dropped. `allowPrivilegeEscalation: false`.
-
-> [!WARNING]
-> The controller pod runs as root; a kernel exploit escaping nsjail would have root on the node. `allowedEgressDomains` is accepted in the API but not enforced — domain filtering requires an external egress proxy or eBPF layer. See [docs/architecture.md § Security Model](docs/architecture.md#9-security-model) for the full threat model.
 
 ## Configuration
 
@@ -223,7 +228,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
 | Variable | Default | Description |
 |---|---|---|
-| `BOXY_ROUTER_TOKEN` | — | **Required.** Bearer token for clients. |
+| `BOXY_ROUTER_TOKEN` | — | Optional static dev/e2e bypass token. If set, accepted without TokenReview. Omit in production — use SA tokens instead. |
 | `BOXY_SANDBOX_NAMESPACE` | `default` | Namespace where Sandbox CRs and controller pods live. |
 | `BOXY_LISTEN_ADDR` | `:8080` | |
 | `BOXY_CONTROLLER_PORT` | `8080` | Port the controller pods listen on. |
@@ -261,12 +266,13 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | `BOXY_CONTROLLER_PORT` | `8080` | |
 | `BOXY_MAX_SANDBOXES` | `20` | Max concurrent sandboxes on this pod. |
 | `BOXY_MTLS_DISABLED` | `false` | |
-| `BOXY_SANDBOX_PROVIDER` | `nsjail` | Sandbox backend. Only `nsjail` is implemented. |
+| `BOXY_TLS_CERT_PATH` | `/tls/tls.crt` | |
+| `BOXY_TLS_KEY_PATH` | `/tls/tls.key` | |
+| `BOXY_TLS_CA_PATH` | `/tls/ca.crt` | |
 | `BOXY_NSJAIL_PATH` | `/usr/sbin/nsjail` | Path to the nsjail binary. |
 | `BOXY_NSJAIL_ROOTFS` | `/rootfs/ubuntu-24.04` | Default read-only rootfs. |
 | `BOXY_NSJAIL_SANDBOX_ROOT` | `/var/lib/boxy/sandboxes` | Host path for per-sandbox workspace directories. |
 | `BOXY_NSJAIL_BINARIES_DIR` | `/usr/local/bin` | Host directory for `allowedBinaries`. |
-| `RUST_LOG` | `warn` | Log level: `off` / `error` / `warn` / `info` / `debug` / `trace`. |
 
 ## Development
 
@@ -281,7 +287,7 @@ make lint
 make fmt
 ```
 
-Requires Go ≥ 1.26 and Rust ≥ 1.82.
+Requires Go ≥ 1.26.
 
 ### E2E tests
 
@@ -308,14 +314,14 @@ A [kind config and full setup script](local/) is included for spinning up a loca
 ```
 cmd/boxy-router/         Router entry point (Go)
 cmd/boxy-operator/       Operator entry point (Go)
-controller/              nsjail controller (Rust)
-  src/
-    providers/nsjail.rs  Sandbox create/exec/delete lifecycle
-    config.rs            Env-driven configuration
-    routes.rs            Axum HTTP handlers
-    types.rs             Request/response types
+cmd/boxy-controller/     Controller entry point (Go)
+  main.go                Config, mTLS server setup, graceful shutdown
+  server.go              HTTP handlers for /v1/sandboxes, /v1/exec, /healthz
 internal/
   api/                   Shared types and validation
+  nsjail/                nsjail adapter and proto-format config builder
+    adapter.go           Sandbox create/exec/delete lifecycle
+    nsjail_config.go     NsjailConfig struct + ToTextProto() serializer
   kube/                  Sandbox CR client, controller pod DNS
   operator/              Reconciler, StatefulSet scaling, TTL expiry
   router/                HTTP server, MCP server, mTLS client
@@ -326,7 +332,7 @@ test/e2e/                Go and shell end-to-end test suites
 docs/
   architecture.md        Full system design and architecture reference
 Dockerfile.router
-Dockerfile.controller    Multi-stage: nsjail build + Ubuntu 24.04 rootfs + Rust binary
+Dockerfile.controller    Multi-stage: nsjail build + Ubuntu 24.04 rootfs + Go binary
 Dockerfile.operator
 ```
 

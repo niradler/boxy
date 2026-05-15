@@ -30,7 +30,7 @@ The system is built in three tiers:
 | ---------- | -------- | -------------------------------------------------------------------- |
 | Router     | Go       | Stateless HTTP frontend, auth, Kubernetes resource management        |
 | Operator   | Go       | Kubernetes controller — sandbox lifecycle, bin-packing, auto-scaling |
-| Controller | Rust     | Per-node nsjail daemon — runs actual sandboxes                       |
+| Controller | Go       | Per-node nsjail daemon — runs actual sandboxes                       |
 
 ---
 
@@ -90,7 +90,7 @@ The system is built in three tiers:
 
 The router is the only public-facing component. It:
 
-- Validates bearer token (`Authorization: Bearer <BOXY_ROUTER_TOKEN>`)
+- Validates bearer token (`Authorization: Bearer <token>`) — SA token via TokenReview, or static dev bypass if `BOXY_ROUTER_TOKEN` is set
 - Parses and validates all API requests
 - Creates/reads/deletes Sandbox CRs in Kubernetes
 - Waits for a sandbox to reach `Running` phase before forwarding exec calls
@@ -162,23 +162,27 @@ Floor: never go below BOXY_MIN_CONTROLLER_REPLICAS
 
 **Deployment:** Kubernetes StatefulSet (stable DNS names: `boxy-ctrl-{n}.boxy-ctrl-headless.boxy.svc.cluster.local`).
 
-Written in Rust for low per-sandbox overhead. Exposes a small HTTP API (mTLS-only) consumed by the router and operator:
+Written in Go. Exposes a small HTTP API (mTLS-only) consumed by the router and operator:
 
-| Endpoint                  | Method | Action                                                  |
-| ------------------------- | ------ | ------------------------------------------------------- |
-| `/v1/sandboxes`           | POST   | Create a new sandbox (mkdir workspace, validate config) |
-| `/v1/sandboxes/{id}/exec` | POST   | Run a command in the sandbox via nsjail                 |
-| `/v1/sandboxes/{id}`      | DELETE | Remove sandbox (kill processes, clean workspace)        |
+| Endpoint        | Method | Action                                                  |
+| --------------- | ------ | ------------------------------------------------------- |
+| `/v1/sandboxes` | POST   | Create a new sandbox (mkdir workspace, validate config) |
+| `/v1/sandboxes` | GET    | List active sandbox IDs                                 |
+| `/v1/sandboxes` | DELETE | Remove sandbox (clean workspace)                        |
+| `/v1/exec`      | POST   | Run a command in the sandbox via nsjail                 |
+| `/healthz`      | GET    | Liveness check                                          |
 
-Internally, each sandbox is just a directory at `/var/lib/boxy/sandboxes/{id}/workspace`. When exec is called, the controller spawns nsjail with that directory bind-mounted as `/workspace` inside the jail.
+Internally, each sandbox is a directory at `/var/lib/boxy/sandboxes/{id}/workspace`. When exec is called, the controller builds an `NsjailConfig` struct, serializes it to protobuf text format, writes it to a temp file, and runs `nsjail --config <file> -- <cmd> <args>`. The temp file is removed after nsjail exits.
 
-The `SandboxProvider` trait abstracts the isolation backend — today only `nsjail` is implemented, but the interface allows future providers (e.g. gVisor, microVMs):
+The `Adapter` interface abstracts the isolation backend — today only `nsjail` is implemented, but the interface allows future providers (e.g. gVisor, microVMs):
 
-```rust
-trait SandboxProvider {
-    async fn create_sandbox(&self, req: CreateSandboxReq) -> Result<()>;
-    async fn exec(&self, sandbox_id: &str, req: ExecReq) -> Result<ExecResult>;
-    async fn delete_sandbox(&self, sandbox_id: &str) -> Result<()>;
+```go
+type Adapter interface {
+    Create(ctx context.Context, req *api.SandboxCreateBody) error
+    Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int) (*api.ExecResponseBody, error)
+    Delete(ctx context.Context, sandboxID string) error
+    ListIDs() []string
+    Count() int
 }
 ```
 
@@ -197,7 +201,7 @@ SandboxSpec
   env               map[string]string  Sandbox-level env vars (max 64 keys)
   allowedBinaries   []string           Binaries bind-mounted read-only into sandbox
   vm                VMConfig           memoryMb, rlimits, workdir, hostname, user, rootfs image
-  network           NetworkConfig      enabled, allowInternetAccess, allowedEgressDomains
+  network           NetworkConfig      enabled, allowInternetAccess
   volumes           []VolumeMount      Extra mounts (tmpfs, bind)
 
 SandboxStatus
@@ -255,22 +259,39 @@ Client            Router           Kubernetes       Controller
 
 ### nsjail Invocation Model
 
-For each exec, the controller spawns an nsjail process with flags roughly equivalent to:
+For each exec the controller builds an `NsjailConfig` struct, serializes it to [protobuf text format](https://developers.google.com/protocol-buffers/docs/text_format_spec), writes it to a temp file, then runs:
 
 ```
-nsjail
-  --mode o                                 # one-shot: exit when command exits
-  --chroot /rootfs/ubuntu-24.04            # read-only base OS
-  --bindmount /var/lib/boxy/.../workspace:/workspace   # persistent R/W
-  --tmpfsmount /tmp                        # ephemeral scratch (discarded after exec)
-  --hostname <hostname>
-  --user <user>
-  --cgroup_mem_max <memoryMb in bytes>
-  --rlimit_as / --rlimit_nofile / ...      # POSIX resource limits
-  --time_limit <timeoutSeconds>            # SIGKILL at expiry
-  [--disable_clone_newnet]                 # only when allowInternetAccess = true
-  -- <command> <args...>
+nsjail --config /tmp/nsjail-<random>.pb.txt -- <command> <args...>
 ```
+
+The temp file is removed after nsjail exits. Example config content:
+
+```
+mode: ONCE
+log: "/dev/null"
+chroot: "/rootfs/ubuntu-24.04"
+disable_clone_newuser: true
+disable_clone_newnet: true
+time_limit: 30
+cgroup_mem_max: 536870912
+uidmap { inside_id: "nobody" outside_id: "" count: 1 }
+gidmap { inside_id: "nobody" outside_id: "" count: 1 }
+envar: "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+mount {
+  src: "/var/lib/boxy/sandboxes/sandbox-A/workspace"
+  dst: "/workspace"
+  rw: true
+  is_bind: true
+}
+mount {
+  dst: "/tmp"
+  fstype: "tmpfs"
+  rw: true
+}
+```
+
+Optional fields (`seccomp_string`, `clone_newtime`, `iface_vs*` for MACVLAN, `use_pasta`) are emitted only when set.
 
 ### Isolation Layers
 
@@ -302,7 +323,6 @@ nsjail
 
 | Feature                                      | Status       | Note                                                            |
 | -------------------------------------------- | ------------ | --------------------------------------------------------------- |
-| Network egress filtering (domain allowlists) | Not enforced | `allowedEgressDomains` parsed but nsjail has no firewall        |
 | vCPU count limits                            | Not enforced | `vm.vcpus` accepted but ignored                                 |
 | Per-exec workspace cleanup                   | N/A          | `/workspace` is persistent by design; only `/tmp` is ephemeral  |
 | Custom rootfs image pull                     | N/A          | `vm.image` must be a pre-baked path on the node; no image fetch |
@@ -343,10 +363,12 @@ Sandbox-level network isolation is enforced by nsjail (isolated network namespac
 
 ### Per-Sandbox Network Modes
 
-| `network.allowInternetAccess` | Behavior                                                                         |
-| ----------------------------- | -------------------------------------------------------------------------------- |
-| `false` (default)             | nsjail creates isolated network namespace — sandbox has no external connectivity |
-| `true`                        | `--disable_clone_newnet` — sandbox inherits the pod's host network               |
+| Setting | Behavior |
+| ------- | -------- |
+| `allowInternetAccess: false` (default) | nsjail creates an isolated network namespace — sandbox has no external connectivity |
+| `allowInternetAccess: true` | `disable_clone_newnet: true` in proto — sandbox inherits the pod's host network |
+| `macvlan: { interface: "eth0", ... }` | Clones a MACVLAN interface into the sandbox network namespace with an optional static IP/gateway |
+| `usePasta: true` | Uses pasta userland networking — sandbox gets NAT'd internet access without `NET_ADMIN` |
 
 ---
 
@@ -355,12 +377,12 @@ Sandbox-level network isolation is enforced by nsjail (isolated network namespac
 ### Authentication & Authorization
 
 ```
-Client -----(Bearer token)-----> Router
+Client -----(Bearer token: SA or static)-----> Router
 Router -----(mTLS: client cert + CA pin)-----> Controller
 Operator ---(mTLS: client cert + CA pin)-----> Controller
 ```
 
-- **One shared bearer token** gates all API access at the router. There is no per-sandbox or per-user RBAC — callers are trusted equally once they pass the token check.
+- **Router auth** has two modes: (1) **SA token** — any valid Kubernetes ServiceAccount token, validated via the TokenReview API; caller identity is the K8s `UserInfo` (username + groups); (2) **Static token** — `BOXY_ROUTER_TOKEN`, a dev/e2e bypass accepted without a TokenReview call. There is no per-caller RBAC — all authenticated callers have equal access.
 - **mTLS** uses a Helm-generated CA with server and client certs. Controller pods verify the client cert against the CA; the router/operator verify the server cert against the same CA. No hostname verification — identity is CA membership, not DNS name.
 - `BOXY_MTLS_DISABLED=true` removes mutual auth entirely; dev-only.
 
@@ -391,7 +413,7 @@ The controller runs as root inside its container because nsjail needs `SYS_ADMIN
 
 | Threat                                                     | Mitigation                                                                     |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Unauthorized API access                                    | Bearer token on router                                                         |
+| Unauthorized API access                                    | Bearer token on router — SA token via TokenReview (production) or static dev bypass |
 | Router/operator impersonating each other toward controller | mTLS with shared CA                                                            |
 | Sandbox escaping to host filesystem                        | nsjail mount namespace + R/O rootfs; only `/workspace` and `/tmp` are writable |
 | Sandbox reaching other sandboxes over network              | Isolated network namespace per sandbox                                         |
@@ -403,8 +425,7 @@ The controller runs as root inside its container because nsjail needs `SYS_ADMIN
 **Known gaps:**
 
 - **No per-caller tenant isolation.** All callers share the same token and can name/access any sandbox by ID.
-- **`allowedEgressDomains` not enforced.** Network domain allowlisting requires an external egress proxy or eBPF layer.
-- **Controller pod runs as root.** A kernel exploit escaping nsjail would have root on the node.
+- **No per-caller tenant isolation.** All callers share the same token and can name/access any sandbox by ID.
 
 ---
 
@@ -484,7 +505,7 @@ Scale-up adds ~30 s (StatefulSet pod scheduling + image pull if not cached).
 +----------------------------------------------------------------------+
 ```
 
-**Node-local only.** `/var/lib/boxy/sandboxes/` is a hostPath — there is no distributed storage. A sandbox is pinned to a controller pod; if the pod is rescheduled to a different node, workspace data is lost. This is intentional — sandboxes are ephemeral and workspace data is scoped to the sandbox TTL.
+**Node-local only.** `/var/lib/boxy/sandboxes/` is an `emptyDir` volume — there is no distributed storage. A sandbox is pinned to a controller pod; if the pod is deleted or rescheduled, workspace data is lost. This is intentional — sandboxes are ephemeral and workspace data is scoped to the sandbox TTL. Because `emptyDir` is pod-scoped, kubelet cleans up workspace dirs automatically on pod termination.
 
 Callers that need durable artifact storage should export files out of the sandbox via exec + stdout before the sandbox is deleted.
 
@@ -497,7 +518,7 @@ Callers that need durable artifact storage should export files out of the sandbo
 | Router pod restart                        | Stateless; new pod picks up from Kubernetes cache immediately                                                                                     |
 | Operator pod restart                      | New leader elected; reconciler re-drives all CRs from Kubernetes state                                                                            |
 | Controller pod restart                    | Sandbox CR stays `Running`; next exec gets a stale-route error; router resets CR to `Pending`; operator reassigns to another pod (workspace lost) |
-| Controller pod rescheduled to new node    | Same as restart; workspace dir on old node is orphaned (no automatic cleanup today)                                                               |
+| Controller pod rescheduled to new node    | Same as restart; workspace data is lost (emptyDir is pod-scoped; no orphaned dirs)                                                               |
 | Kubernetes API server slow                | Router times out waiting for sandbox `Running`; returns 504 to client                                                                             |
 | nsjail OOM kill                           | Exec returns non-zero exit code + truncated stderr; not surfaced as a 5xx                                                                         |
 | Exec timeout                              | nsjail SIGKILLs child; exec returns exit code 137                                                                                                 |
@@ -531,7 +552,7 @@ kubectl get sandbox -n boxy -o wide | grep Creating
 | Frequent "no capacity" requeues        | Increase `BOXY_MAX_CONTROLLER_REPLICAS`               |
 | Controller pods scaling up too eagerly | Increase `BOXY_MAX_SANDBOXES_PER_CONTROLLER`          |
 | Idle pods staying up too long          | Decrease `BOXY_SCALE_DOWN_COOLDOWN_SECONDS`           |
-| Disk filling up on controller nodes    | Lower `ttlSeconds`; check for zombie `Terminated` CRs |
+| Disk filling up on controller nodes    | Lower `ttlSeconds`; check for zombie `Terminated` CRs; workspace dirs are emptyDir-scoped so they vanish with the pod |
 | High exec latency                      | Scale out router replicas; check controller pod CPU   |
 
 ### Debug a Stuck Sandbox
@@ -552,4 +573,4 @@ kubectl logs -n boxy boxy-ctrl-{n}
 
 ### Disk Cleanup (orphaned workspaces)
 
-Workspace dirs on controller nodes are not garbage-collected if a pod is evicted. To clean up, cross-reference host directories against live Sandbox CRs and remove directories that no longer have a corresponding CR.
+Not applicable. Workspace dirs live in an `emptyDir` volume scoped to the controller pod — kubelet removes them automatically when the pod is deleted or rescheduled. No manual cleanup is needed.

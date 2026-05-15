@@ -61,7 +61,6 @@ router:
       idleTimeoutSec: 0
     network:
       allowInternetAccess: false
-      allowedEgressDomains: []
     volumes: []
 
 # --- Controller (nsjail StatefulSet) ---

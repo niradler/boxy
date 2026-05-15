@@ -15,10 +15,3 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
-  test-rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
-        working-directory: controller

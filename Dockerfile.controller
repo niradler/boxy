@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1.7
 # NOTE: nsjail uses glibc-specific types (rlimit64, RLIM64_INFINITY) that
 # musl (Alpine) does not support. The runtime base is Debian slim (glibc).
-# The Rust binary is compiled with musl for a fully static executable.
+# The Go binary is compiled with CGO_ENABLED=0 for a fully static executable.
 
-# Stage 1: Build the Rust controller binary (musl = static, no glibc dep).
-FROM rust:alpine AS rust-builder
-RUN apk add --no-cache musl-dev pkgconfig perl make cmake g++
-WORKDIR /build
-COPY controller/ .
-RUN cargo build --release --bin boxy-controller
+# Stage 1: Build the Go controller binary.
+FROM golang:1.26-bookworm AS go-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /boxy-controller ./cmd/boxy-controller
 
 # Stage 2: Build nsjail from source (requires glibc headers).
 FROM debian:bookworm-slim AS nsjail-builder
@@ -38,11 +39,10 @@ COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail
 # Pre-baked Ubuntu 24.04 rootfs for sandboxes (overlayfs lower dir).
 COPY --from=rootfs / /rootfs/ubuntu-24.04
 
-# Static musl Rust binary — runs on any Linux regardless of glibc version.
-COPY --from=rust-builder /build/target/release/boxy-controller /usr/local/bin/boxy-controller
+# Static Go binary — no glibc dependency.
+COPY --from=go-builder /boxy-controller /usr/local/bin/boxy-controller
 
-ENV BOXY_SANDBOX_PROVIDER=nsjail \
-    BOXY_NSJAIL_PATH=/usr/sbin/nsjail \
+ENV BOXY_NSJAIL_PATH=/usr/sbin/nsjail \
     BOXY_NSJAIL_ROOTFS=/rootfs/ubuntu-24.04 \
     BOXY_NSJAIL_SANDBOX_ROOT=/var/lib/boxy/sandboxes \
     BOXY_NSJAIL_BINARIES_DIR=/usr/local/bin
