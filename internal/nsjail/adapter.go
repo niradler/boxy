@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -50,6 +51,7 @@ type AdapterConfig struct {
 type sandbox struct {
 	req       api.SandboxCreateBody
 	workspace string // absolute path to the per-sandbox R/W workspace
+	binDir    string // absolute path to the per-sandbox /usr/local/bin mirror
 }
 
 // NsjailAdapter implements Adapter using nsjail with protobuf text-format config files.
@@ -85,7 +87,19 @@ func (a *NsjailAdapter) Create(ctx context.Context, req *api.SandboxCreateBody) 
 		return errInternal(fmt.Sprintf("mkdir workspace %s: %v", workspace, err))
 	}
 
-	a.sandboxes[req.SandboxID] = &sandbox{req: *req, workspace: workspace}
+	binDir := filepath.Join(a.cfg.SandboxRoot, req.SandboxID, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return errInternal(fmt.Sprintf("mkdir bin %s: %v", binDir, err))
+	}
+	for _, bin := range req.AllowedBinaries {
+		src := filepath.Join(a.cfg.BinariesDir, bin)
+		dst := filepath.Join(binDir, bin)
+		if err := copyExec(src, dst); err != nil {
+			return errInternal(fmt.Sprintf("copy binary %q: %v", bin, err))
+		}
+	}
+
+	a.sandboxes[req.SandboxID] = &sandbox{req: *req, workspace: workspace, binDir: binDir}
 	return nil
 }
 
@@ -148,10 +162,15 @@ func (a *NsjailAdapter) Exec(
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
+			// Exit code 137 = SIGKILL (128+9). nsjail sends SIGKILL to the child
+			// when time_limit fires and propagates the exit status, so this is the
+			// reliable signal that the sandbox's configured timeout was hit.
+			timedOut := timeoutSecs > 0 && exitErr.ExitCode() == 137
 			return &api.ExecResponseBody{
 				Stdout:   stdout.String(),
 				Stderr:   stderr.String(),
 				ExitCode: exitErr.ExitCode(),
+				TimedOut: timedOut,
 			}, nil
 		}
 		if deadline.Err() == context.DeadlineExceeded {
@@ -294,6 +313,16 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		MountPt{Src: "/dev/urandom", Dst: "/dev/urandom", IsBind: true},
 		MountPt{Src: "/dev/random", Dst: "/dev/random", IsBind: true},
 	)
+	// When internet access is enabled the sandbox inherits the pod's network namespace,
+	// but the bare Ubuntu rootfs has an empty /etc/resolv.conf. Bind-mount the pod's
+	// resolv.conf so DNS resolution works inside the sandbox.
+	if sb.req.Network != nil && sb.req.Network.AllowInternetAccess {
+		cfg.Mounts = append(cfg.Mounts, MountPt{
+			Src:    "/etc/resolv.conf",
+			Dst:    "/etc/resolv.conf",
+			IsBind: true,
+		})
+	}
 
 	// Sandbox volumes.
 	for _, vol := range sb.req.Volumes {
@@ -313,14 +342,16 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		}
 	}
 
-	// Allowed binaries: bind-mounted read-only from the host binaries dir.
-	for _, bin := range sb.req.AllowedBinaries {
-		cfg.Mounts = append(cfg.Mounts, MountPt{
-			Src:    filepath.Join(a.cfg.BinariesDir, bin),
-			Dst:    "/usr/local/bin/" + bin,
-			IsBind: true,
-		})
-	}
+	// Bind-mount the per-sandbox bin directory as /usr/local/bin.
+	// binDir is populated at Create() with copies of the allowed binaries, so each
+	// sandbox sees only its own binaries. Being on the host FS (not a tmpfs),
+	// writes inside the sandbox persist across exec calls.
+	cfg.Mounts = append(cfg.Mounts, MountPt{
+		Src:    sb.binDir,
+		Dst:    "/usr/local/bin",
+		Rw:     true,
+		IsBind: true,
+	})
 
 	// Env vars: baseline (PATH, HOME), then sandbox-level, then per-exec overrides.
 	// HOME=/workspace is the only non-PATH baseline: many tools (npm, pip, git)
@@ -409,4 +440,22 @@ func resolveCommandInChroot(command, chroot string) string {
 func isUnderPath(child, parent string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && !strings.HasPrefix(rel, "..")
+}
+
+// copyExec copies src to dst with executable permissions.
+func copyExec(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

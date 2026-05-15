@@ -345,6 +345,108 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 	}
 }
 
+func createSandboxHelper(t *testing.T, base, tok string, body api.SandboxCreateBody) api.SandboxResponseBody {
+	t.Helper()
+	payload, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := httpClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+		t.Fatalf("create sandbox status %d", res.StatusCode)
+	}
+	var sb api.SandboxResponseBody
+	if err := json.NewDecoder(res.Body).Decode(&sb); err != nil {
+		t.Fatal(err)
+	}
+	return sb
+}
+
+func deleteSandbox(t *testing.T, base, tok, id string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	_, _ = httpClient().Do(req)
+}
+
+// TestExecTimedOut verifies that timedOut=true and exitCode=137 are returned
+// when a command exceeds its configured timeout.
+func TestExecTimedOut(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sb := createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SessionID:  "e2e-timeout",
+		SandboxID:  "e2e-timeout-" + ts,
+		Owner:      "e2e",
+		TTLSeconds: 120,
+	})
+	t.Cleanup(func() { deleteSandbox(t, base, tok, sb.SandboxID) })
+	waitReady(t, base, tok, sb)
+
+	out := postExec(t, base, tok, api.ExecRequestBody{
+		SessionID:      "e2e-timeout",
+		SandboxID:      sb.SandboxID,
+		Command:        "sleep",
+		Args:           []string{"60"},
+		TimeoutSeconds: 2,
+	})
+	if !out.TimedOut {
+		t.Fatalf("expected timedOut=true, got false (exitCode=%d stdout=%q stderr=%q)", out.ExitCode, out.Stdout, out.Stderr)
+	}
+	if out.ExitCode != 137 {
+		t.Fatalf("expected exitCode=137 (SIGKILL), got %d", out.ExitCode)
+	}
+}
+
+// TestInternetAccessDNS verifies that a sandbox with allowInternetAccess=true
+// has a populated /etc/resolv.conf and can resolve hostnames.
+func TestInternetAccessDNS(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sb := createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SessionID:  "e2e-dns",
+		SandboxID:  "e2e-dns-" + ts,
+		Owner:      "e2e",
+		TTLSeconds: 120,
+		Network:    &api.SandboxNetworkConfig{AllowInternetAccess: true},
+	})
+	t.Cleanup(func() { deleteSandbox(t, base, tok, sb.SandboxID) })
+	waitReady(t, base, tok, sb)
+
+	// /etc/resolv.conf must have nameserver entries — validates the bind-mount fix.
+	resolvOut := postExec(t, base, tok, api.ExecRequestBody{
+		SessionID:      "e2e-dns",
+		SandboxID:      sb.SandboxID,
+		Command:        "sh",
+		Args:           []string{"-c", "grep -c nameserver /etc/resolv.conf 2>/dev/null || echo 0"},
+		TimeoutSeconds: 10,
+	})
+	if strings.TrimSpace(resolvOut.Stdout) == "0" {
+		t.Fatalf("/etc/resolv.conf has no nameserver entries — resolv.conf bind-mount fix not applied (stderr=%q)", resolvOut.Stderr)
+	}
+
+	// DNS resolution — requires controller.networkPolicy.allowInternetEgress=true.
+	// Skip gracefully if egress is blocked at the network layer.
+	dnsOut := postExec(t, base, tok, api.ExecRequestBody{
+		SessionID:      "e2e-dns",
+		SandboxID:      sb.SandboxID,
+		Command:        "sh",
+		Args:           []string{"-c", "getent hosts example.com 2>/dev/null | head -1 | awk '{print $1}' || echo blocked"},
+		TimeoutSeconds: 15,
+	})
+	ip := strings.TrimSpace(dnsOut.Stdout)
+	if ip == "blocked" || ip == "" {
+		t.Skip("DNS resolution blocked — set controller.networkPolicy.allowInternetEgress=true to test end-to-end")
+	}
+	if !strings.Contains(ip, ".") && !strings.Contains(ip, ":") {
+		t.Fatalf("DNS resolved to unexpected output %q", ip)
+	}
+}
+
 func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.ExecResponseBody {
 	t.Helper()
 	payload, _ := json.Marshal(body)
