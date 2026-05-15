@@ -107,8 +107,3 @@ func tokenHash(token string) string {
 type ctxKey string
 
 const authUserKey ctxKey = "authUser"
-
-func userFromContext(ctx context.Context) *authv1.UserInfo {
-	u, _ := ctx.Value(authUserKey).(*authv1.UserInfo)
-	return u
-}
