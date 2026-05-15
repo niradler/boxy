@@ -1,8 +1,19 @@
+{{- /*
+  CRDs are placed in templates/ (not crds/) so that helm upgrade applies them on
+  every release, keeping the schema in sync. The resource-policy annotation
+  prevents helm uninstall from deleting the CRDs (and the CR data they protect).
+
+  Upgrading from a release that had CRDs in crds/: Helm already applied those on
+  first install, so these templates will match the existing resource names and
+  Helm will update them in-place. No manual kubectl apply needed.
+*/ -}}
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: sandboxes.boxy.dev
   annotations:
+    "helm.sh/resource-policy": keep
     controller-gen.kubebuilder.io/version: (devel)
 spec:
   group: boxy.dev
@@ -276,6 +287,8 @@ spec:
                     - Running
                     - Deleting
                     - Terminated
+                controllerPool:
+                  type: string
                 controllerPod:
                   type: string
                 controllerAddress:
@@ -297,3 +310,105 @@ spec:
                   format: date-time
                 message:
                   type: string
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: controllerpools.boxy.dev
+  annotations:
+    "helm.sh/resource-policy": keep
+    controller-gen.kubebuilder.io/version: (devel)
+spec:
+  group: boxy.dev
+  names:
+    kind: ControllerPool
+    listKind: ControllerPoolList
+    plural: controllerpools
+    singular: controllerpool
+    shortNames:
+      - cp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: integer
+          jsonPath: ".status.readyReplicas"
+        - name: Active
+          type: integer
+          jsonPath: ".status.activeSandboxCount"
+        - name: Age
+          type: date
+          jsonPath: ".metadata.creationTimestamp"
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: ControllerPool represents the fleet of boxy-controller pods (a single StatefulSet).
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - maxSandboxes
+                - maxReplicas
+                - minReplicas
+              properties:
+                maxSandboxes:
+                  type: integer
+                  minimum: 1
+                maxReplicas:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                minReplicas:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                image:
+                  type: string
+                preinstalledBinaries:
+                  type: array
+                  items:
+                    type: string
+            status:
+              type: object
+              properties:
+                readyReplicas:
+                  type: integer
+                  format: int32
+                activeSandboxCount:
+                  type: integer
+                  format: int32
+                lastScaleTime:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, status, reason, message, lastTransitionTime]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64

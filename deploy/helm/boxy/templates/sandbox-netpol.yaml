@@ -34,4 +34,10 @@ spec:
         - podSelector:
             matchLabels:
               app: boxy-router
+    {{- if .Values.controller.networkPolicy.allowInternetEgress }}
+    # Unrestricted egress — required when sandboxes use allowInternetAccess: true.
+    # The sandbox inherits the controller pod's network namespace, so internet
+    # reachability is gated here at the pod level.
+    - {}
+    {{- end }}
 {{- end }}
