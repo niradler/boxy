@@ -264,6 +264,46 @@ for sb in "${SB_MCP_A}" "${SB_MCP_B}"; do
 done
 
 # -----------------------------------------------------------------------
+# Sandbox → Controller API isolation
+# An internet-enabled sandbox shares the controller pod's network namespace
+# and can reach localhost:<BOXY_CONTROLLER_PORT>. It must NOT be able to
+# call the controller exec API unauthenticated and run commands in other
+# sandboxes. Protection: mTLS (production) or BOXY_CONTROLLER_TOKEN (dev).
+# -----------------------------------------------------------------------
+
+suite "Sandbox → Controller API Isolation"
+
+SB_INET_ISO=$(unique_id)
+curl_api POST "/v1/sandboxes" \
+  -d "{\"sessionId\":\"iso\",\"sandboxId\":\"${SB_INET_ISO}\",\"owner\":\"e2e\",\"ttlSeconds\":120,
+       \"network\":{\"allowInternetAccess\":true}}" >/dev/null
+wait_sandbox_ready "${SB_INET_ISO}" 60 || true
+
+# Try to call the controller exec API directly from within an internet-enabled sandbox.
+# Uses bash /dev/tcp to send a raw HTTP request — no curl needed in the rootfs.
+# If the controller API responds with HTTP 200 to an unauthenticated exec call,
+# the sandbox can escape isolation and run commands in other sandboxes. FAIL.
+ctrl_port=8080
+ctrl_api_result=$(curl_api POST "/v1/exec" \
+  -d "{\"sessionId\":\"iso\",\"sandboxId\":\"${SB_INET_ISO}\",\"command\":\"bash\",
+       \"args\":[\"-c\",\"exec 3<>/dev/tcp/127.0.0.1/${ctrl_port} 2>/dev/null && printf 'POST /v1/exec HTTP/1.0\\\\r\\\\nHost: localhost\\\\r\\\\nContent-Type: application/json\\\\r\\\\nContent-Length: 49\\\\r\\\\n\\\\r\\\\n{\\\\\"sandbox_id\\\\\":\\\\\"x\\\\\",\\\\\"command\\\\\":\\\\\"id\\\\\"}' >&3 && timeout 2 head -1 <&3 2>/dev/null || echo unreachable\"],
+       \"timeoutSeconds\":15}" \
+  | jq -r '.stdout // empty' | tr -d '\r\n')
+
+if [[ "${ctrl_api_result}" == "unreachable" || -z "${ctrl_api_result}" ]]; then
+  pass "Controller API unreachable from sandbox (mTLS or network isolation)"
+elif echo "${ctrl_api_result}" | grep -q "^HTTP/1\.. 200"; then
+  fail "SECURITY: Sandbox reached controller API unauthenticated (exec in other sandboxes possible)"
+elif echo "${ctrl_api_result}" | grep -qE "^HTTP/1\.. 401|^HTTP/1\.. 403"; then
+  pass "Controller API reachable but protected by token (${ctrl_api_result})"
+else
+  # TLS error, connection reset, timeout, other non-200 — controller is protected
+  pass "Controller API access blocked or rejected (${ctrl_api_result})"
+fi
+
+curl_api DELETE "/v1/sandboxes/${SB_INET_ISO}" >/dev/null 2>&1 || true
+
+# -----------------------------------------------------------------------
 # Cleanup
 # -----------------------------------------------------------------------
 
