@@ -1,5 +1,7 @@
 # boxy
 
+> **Early release — single-tenant only.** Do not mix sandboxes from different tenants on the same node. The isolation model (nsjail + shared rootfs, mTLS between components) is designed for a single trusted tenant per cluster. Multi-tenant workloads require additional network policies, separate node pools, and a security review before deployment.
+
 **Kubernetes-native sandbox runtime.** Run isolated shell commands inside ephemeral Linux environments via a clean HTTP API or MCP — no VMs, no hypervisors, no hardware dependencies.
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](go.mod)
