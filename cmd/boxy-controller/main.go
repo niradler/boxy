@@ -42,10 +42,11 @@ func configFromEnv() (*config, error) {
 		maxExecConcurrency: envInt("BOXY_MAX_EXEC_CONCURRENCY", 50),
 		maxOutputBytes:     envInt("BOXY_MAX_OUTPUT_BYTES", 6<<20),
 		adapterConfig: nsjail.AdapterConfig{
-			NsjailPath:    envStr("BOXY_NSJAIL_PATH", "/usr/sbin/nsjail"),
-			DefaultRootfs: envStr("BOXY_NSJAIL_ROOTFS", "/rootfs/ubuntu-24.04"),
-			SandboxRoot:   envStr("BOXY_NSJAIL_SANDBOX_ROOT", "/var/lib/boxy/sandboxes"),
-			BinariesDir:   envStr("BOXY_NSJAIL_BINARIES_DIR", "/usr/local/bin"),
+			NsjailPath:     envStr("BOXY_NSJAIL_PATH", "/usr/sbin/nsjail"),
+			DefaultRootfs:  envStr("BOXY_NSJAIL_ROOTFS", "/rootfs/ubuntu-24.04"),
+			SandboxRoot:    envStr("BOXY_NSJAIL_SANDBOX_ROOT", "/var/lib/boxy/sandboxes"),
+			BinariesDir:    envStr("BOXY_NSJAIL_BINARIES_DIR", "/usr/local/bin"),
+			MaxOutputBytes: envInt("BOXY_MAX_OUTPUT_BYTES", 6<<20),
 		},
 	}
 	return cfg, nil

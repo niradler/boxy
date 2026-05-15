@@ -99,7 +99,7 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 		return toolError("exec error: " + err.Error())
 	}
 
-	go s.touchLastExec(sandbox)
+	go s.touchLastExec(sandbox.DeepCopy())
 
 	text := result.Stdout
 	if result.Stderr != "" {

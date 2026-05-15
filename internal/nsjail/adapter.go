@@ -42,10 +42,11 @@ func errInternal(msg string) *AdapterError   { return &AdapterError{500, msg} }
 
 // AdapterConfig holds paths injected at startup (mirrors the Rust Config fields).
 type AdapterConfig struct {
-	NsjailPath    string
-	DefaultRootfs string
-	SandboxRoot   string
-	BinariesDir   string
+	NsjailPath     string
+	DefaultRootfs  string
+	SandboxRoot    string
+	BinariesDir    string
+	MaxOutputBytes int // truncate stdout/stderr above this size; 0 = unlimited
 }
 
 type sandbox struct {
@@ -82,19 +83,22 @@ func (a *NsjailAdapter) Create(ctx context.Context, req *api.SandboxCreateBody) 
 		return errConflict(req.SandboxID)
 	}
 
-	workspace := filepath.Join(a.cfg.SandboxRoot, req.SandboxID, "workspace")
+	sandboxBase := filepath.Join(a.cfg.SandboxRoot, req.SandboxID)
+	workspace := filepath.Join(sandboxBase, "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return errInternal(fmt.Sprintf("mkdir workspace %s: %v", workspace, err))
 	}
 
-	binDir := filepath.Join(a.cfg.SandboxRoot, req.SandboxID, "bin")
+	binDir := filepath.Join(sandboxBase, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		_ = os.RemoveAll(sandboxBase)
 		return errInternal(fmt.Sprintf("mkdir bin %s: %v", binDir, err))
 	}
 	for _, bin := range req.AllowedBinaries {
 		src := filepath.Join(a.cfg.BinariesDir, bin)
 		dst := filepath.Join(binDir, bin)
 		if err := copyExec(src, dst); err != nil {
+			_ = os.RemoveAll(sandboxBase)
 			return errInternal(fmt.Sprintf("copy binary %q: %v", bin, err))
 		}
 	}
@@ -154,7 +158,11 @@ func (a *NsjailAdapter) Exec(
 	defer cancel()
 
 	nsjailCmd := exec.CommandContext(deadline, a.cfg.NsjailPath, cmdArgs...)
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr limitWriter
+	if a.cfg.MaxOutputBytes > 0 {
+		stdout.limit = int64(a.cfg.MaxOutputBytes)
+		stderr.limit = int64(a.cfg.MaxOutputBytes)
+	}
 	nsjailCmd.Stdout = &stdout
 	nsjailCmd.Stderr = &stderr
 
@@ -189,6 +197,29 @@ func (a *NsjailAdapter) Exec(
 		ExitCode: 0,
 	}, nil
 }
+
+// limitWriter is an io.Writer that stops accepting data once limit bytes have
+// been written, silently discarding additional bytes. Zero limit = unlimited.
+type limitWriter struct {
+	buf   bytes.Buffer
+	limit int64
+}
+
+func (lw *limitWriter) Write(p []byte) (int, error) {
+	if lw.limit > 0 {
+		remaining := lw.limit - int64(lw.buf.Len())
+		if remaining <= 0 {
+			return len(p), nil // discard; report success so the process isn't killed
+		}
+		if int64(len(p)) > remaining {
+			p = p[:remaining]
+		}
+	}
+	n, err := lw.buf.Write(p)
+	return n, err
+}
+
+func (lw *limitWriter) String() string { return lw.buf.String() }
 
 // Delete removes the sandbox workspace and deregisters the sandbox.
 func (a *NsjailAdapter) Delete(ctx context.Context, sandboxID string) error {
@@ -241,7 +272,7 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		Log:                 "/dev/null",
 		Chroot:              rootfs,
 		DisableCloneNewUser: true,
-		DisableCloneNewNet:  true,
+		DisableCloneNewNet:  false, // default: isolated (nsjail creates a fresh network namespace)
 	}
 
 	if sb.req.VM != nil {
@@ -279,13 +310,16 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		cfg.TimeLimit = uint32(timeoutSecs)
 	}
 
-	// Network: allow internet access by not isolating the net namespace.
+	// Network: when AllowInternetAccess is requested the sandbox inherits the pod's
+	// network namespace (DisableCloneNewNet=true → clone_newnet: false in textproto)
+	// so it can reach whatever the pod can reach.  Default is isolated (false → nsjail
+	// creates a fresh netns with no external routes).
 	if sb.req.Network != nil {
 		net := sb.req.Network
 		if net.Enabled != nil && !*net.Enabled {
-			// network explicitly disabled: keep DisableCloneNewNet = true
+			// network explicitly disabled: leave DisableCloneNewNet = false (isolated)
 		} else if net.AllowInternetAccess {
-			cfg.DisableCloneNewNet = false
+			cfg.DisableCloneNewNet = true // inherit pod netns → internet accessible
 		}
 		if net.UsePasta {
 			cfg.UsePasta = true
@@ -406,10 +440,14 @@ func (a *NsjailAdapter) validateCreateRequest(req *api.SandboxCreateBody) error 
 	}
 
 	for _, vol := range req.Volumes {
-		if vol.HostPath != "" {
-			if strings.Contains(vol.HostPath, "..") || !isUnderPath(vol.HostPath, a.cfg.SandboxRoot) {
-				return errBadRequest(fmt.Sprintf("volume host_path must be under %s", a.cfg.SandboxRoot))
-			}
+		if vol.Type == "tmpfs" {
+			continue
+		}
+		if vol.HostPath == "" {
+			return errBadRequest("volume host_path is required for non-tmpfs volumes")
+		}
+		if strings.Contains(vol.HostPath, "..") || !isUnderPath(vol.HostPath, a.cfg.SandboxRoot) {
+			return errBadRequest(fmt.Sprintf("volume host_path must be under %s", a.cfg.SandboxRoot))
 		}
 	}
 

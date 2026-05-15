@@ -13,9 +13,9 @@ suite "Router Environment Variables"
 router_env=$(kctl get deployment "${RELEASE_NAME}-router" -o json 2>/dev/null | \
   jq -c '[.spec.template.spec.containers[0].env[].name]' || echo "[]")
 
-for expected in BOXY_LISTEN_ADDR BOXY_ROUTER_TOKEN BOXY_SANDBOX_NAMESPACE BOXY_CONTROLLER_PORT \
+for expected in BOXY_LISTEN_ADDR BOXY_SANDBOX_NAMESPACE BOXY_CONTROLLER_PORT \
   BOXY_MTLS_DISABLED BOXY_TLS_CA_PATH BOXY_TLS_CLIENT_CERT_PATH BOXY_TLS_CLIENT_KEY_PATH \
-  BOXY_DEFAULT_SANDBOX_ENABLED; do
+  BOXY_CONTROLLER_TOKEN BOXY_DEFAULT_SANDBOX_ENABLED; do
   if echo "${router_env}" | jq -e "index(\"${expected}\")" > /dev/null 2>&1; then
     pass "Router has env ${expected}"
   else
@@ -34,12 +34,12 @@ for removed in BOXY_REAPER_INTERVAL_SECONDS BOXY_CONTROLLER_IMAGE BOXY_CONTROLLE
   fi
 done
 
-router_token_ref=$(kctl get deployment "${RELEASE_NAME}-router" -o json 2>/dev/null | \
-  jq -r '[.spec.template.spec.containers[0].env[] | select(.name == "BOXY_ROUTER_TOKEN")] | .[0].valueFrom.secretKeyRef.name // empty')
-if [[ -n "${router_token_ref}" ]]; then
-  pass "Router token comes from Secret ref (not plaintext)"
+ctrl_token_ref=$(kctl get deployment "${RELEASE_NAME}-router" -o json 2>/dev/null | \
+  jq -r '[.spec.template.spec.containers[0].env[] | select(.name == "BOXY_CONTROLLER_TOKEN")] | .[0].valueFrom.secretKeyRef.name // empty')
+if [[ -n "${ctrl_token_ref}" ]]; then
+  pass "Router controller-token comes from Secret ref (not plaintext)"
 else
-  fail "Router token comes from Secret ref (not plaintext)"
+  fail "Router controller-token comes from Secret ref (not plaintext)"
 fi
 
 # -----------------------------------------------------------------------
@@ -175,7 +175,7 @@ if [[ -d "${CHART_DIR}" ]] && command -v helm >/dev/null 2>&1; then
   render_hpa=$(helm template test "${CHART_DIR}" \
     --set mtlsDisabled=true \
     --set routerToken=test \
-    --set autoscaling.enabled=true 2>&1)
+    --set router.autoscaling.enabled=true 2>&1)
   if echo "${render_hpa}" | grep -q "HorizontalPodAutoscaler"; then
     pass "HPA rendered when autoscaling.enabled=true"
   else
@@ -185,7 +185,7 @@ if [[ -d "${CHART_DIR}" ]] && command -v helm >/dev/null 2>&1; then
   render_no_hpa=$(helm template test "${CHART_DIR}" \
     --set mtlsDisabled=true \
     --set routerToken=test \
-    --set autoscaling.enabled=false 2>&1)
+    --set router.autoscaling.enabled=false 2>&1)
   if ! echo "${render_no_hpa}" | grep -q "HorizontalPodAutoscaler"; then
     pass "HPA not rendered when autoscaling.enabled=false"
   else

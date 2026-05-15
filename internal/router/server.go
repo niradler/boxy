@@ -148,7 +148,7 @@ type Server struct {
 	auth       *tokenReviewer
 }
 
-func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader, cs kubernetes.Interface) *Server {
+func NewServer(ctx context.Context, cfg Config, k8sClient client.Client, k8sReader client.Reader, cs kubernetes.Interface) *Server {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
 	}
@@ -162,7 +162,7 @@ func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader, cs 
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
 		k8sClient: k8sClient,
 		k8sReader: k8sReader,
-		auth:      newTokenReviewer(cs, ttl, cfg.DevToken),
+		auth:      newTokenReviewer(ctx, cs, ttl, cfg.DevToken),
 		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
 			MTLSDisabled:    cfg.MTLSDisabled,
 			CACertPath:      cfg.TLSCAPath,
@@ -307,7 +307,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.touchLastExec(sandbox)
+	go s.touchLastExec(sandbox.DeepCopy())
 
 	s.writeJSON(w, http.StatusOK, &api.ExecResponseBody{
 		Stdout:   result.Stdout,

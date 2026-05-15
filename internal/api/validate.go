@@ -39,6 +39,9 @@ func ValidateExecRequest(
 		if strings.Contains(k, "=") || strings.TrimSpace(k) == "" {
 			return fmt.Errorf("invalid env key: %q", k)
 		}
+		if blockedSandboxEnvKey(k) {
+			return fmt.Errorf("exec env key not allowed: %q", k)
+		}
 	}
 	if r.TimeoutSeconds <= 0 {
 		return fmt.Errorf("timeoutSeconds must be positive")

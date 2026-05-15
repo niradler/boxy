@@ -175,7 +175,6 @@ func (r *SandboxReconciler) reconcileCreating(ctx context.Context, sandbox *boxy
 	}
 
 	if err := r.ctrlClient.CreateSandbox(ctx, baseURL, req); err != nil {
-		var httpErr *ctrlclient.HTTPError
 		if ctrlclient.IsStaleRouteError(err) {
 			r.log.Warn("controller unreachable during create, resetting to Pending",
 				"sandbox", sandbox.Name, "controller", sandbox.Status.ControllerPod, "err", err)
@@ -188,7 +187,6 @@ func (r *SandboxReconciler) reconcileCreating(ctx context.Context, sandbox *boxy
 			}
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
-		_ = httpErr
 		r.log.Error("create sandbox on controller failed", "sandbox", sandbox.Name, "err", err)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}

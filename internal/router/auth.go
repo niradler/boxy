@@ -31,14 +31,14 @@ type tokenReviewer struct {
 	entries map[string]*cachedResult
 }
 
-func newTokenReviewer(cs kubernetes.Interface, ttl time.Duration, devToken string) *tokenReviewer {
+func newTokenReviewer(ctx context.Context, cs kubernetes.Interface, ttl time.Duration, devToken string) *tokenReviewer {
 	tr := &tokenReviewer{
 		cs:       cs,
 		ttl:      ttl,
 		devToken: devToken,
 		entries:  make(map[string]*cachedResult),
 	}
-	go tr.evictLoop()
+	go tr.evictLoop(ctx)
 	return tr
 }
 
@@ -84,17 +84,23 @@ func (tr *tokenReviewer) authenticate(ctx context.Context, token string) (*authv
 }
 
 // evictLoop removes stale entries every 2×ttl to bound memory use.
-func (tr *tokenReviewer) evictLoop() {
+// It exits when ctx is cancelled (typically on server shutdown).
+func (tr *tokenReviewer) evictLoop(ctx context.Context) {
 	tick := time.NewTicker(tr.ttl * 2)
 	defer tick.Stop()
-	for range tick.C {
-		tr.mu.Lock()
-		for k, e := range tr.entries {
-			if time.Since(e.storedAt) >= tr.ttl {
-				delete(tr.entries, k)
+	for {
+		select {
+		case <-tick.C:
+			tr.mu.Lock()
+			for k, e := range tr.entries {
+				if time.Since(e.storedAt) >= tr.ttl {
+					delete(tr.entries, k)
+				}
 			}
+			tr.mu.Unlock()
+		case <-ctx.Done():
+			return
 		}
-		tr.mu.Unlock()
 	}
 }
 

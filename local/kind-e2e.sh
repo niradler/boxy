@@ -36,9 +36,6 @@ kind load docker-image "${IMAGE_REPO}/boxy-operator:${TAG}" --name "${CLUSTER_NA
 # 4. Install CRD + Helm chart
 # -----------------------------------------------------------------------
 
-echo ">>> Installing CRD"
-kubectl --context "${CTX}" apply -f deploy/helm/boxy/crds/sandbox-crd.yaml
-
 echo ">>> Installing Helm chart"
 helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   -n "${NAMESPACE}" --create-namespace \

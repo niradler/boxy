@@ -54,3 +54,16 @@ func TestValidateSandboxCreateBlockedEnv(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestValidateExecBlockedEnv(t *testing.T) {
+	for _, key := range []string{"BOXY_ROUTER_TOKEN", "KUBERNETES_SERVICE_HOST"} {
+		r := &ExecRequestBody{
+			SessionID: "s", SandboxID: "b",
+			Command: "x", TimeoutSeconds: 1,
+			Env: map[string]string{key: "v"},
+		}
+		if err := ValidateExecRequest(r, 10, 10, 10); err == nil {
+			t.Errorf("expected blocked env key %q to be rejected", key)
+		}
+	}
+}

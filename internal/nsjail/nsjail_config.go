@@ -60,17 +60,17 @@ func protoString(s string) string {
 	b.WriteByte('"')
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		switch c {
-		case '\\':
+		switch {
+		case c == '\\':
 			b.WriteString(`\\`)
-		case '"':
+		case c == '"':
 			b.WriteString(`\"`)
-		case '\n':
+		case c == '\n':
 			b.WriteString(`\n`)
-		case '\r':
+		case c == '\r':
 			b.WriteString(`\r`)
-		case 0:
-			b.WriteString(`\000`)
+		case c < 0x20 || c == 0x7F: // NUL and all other ASCII control chars
+			fmt.Fprintf(&b, `\%03o`, c)
 		default:
 			b.WriteByte(c)
 		}

@@ -18,8 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libprotobuf-dev libnl-route-3-dev protobuf-compiler \
         g++ make pkg-config \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone --depth=1 https://github.com/google/nsjail.git /nsjail && \
-    cd /nsjail && make -j"$(nproc)"
+# Pin to a specific nsjail commit for reproducible, auditable builds.
+# To update: git ls-remote https://github.com/google/nsjail.git HEAD
+RUN git clone https://github.com/google/nsjail.git /nsjail && \
+    cd /nsjail && git checkout 66ad78dc361721512fbf9470488e584364c75489 && \
+    make -j"$(nproc)"
 
 # Stage 3: Extract Ubuntu 24.04 as the pre-baked sandbox rootfs.
 FROM ubuntu:24.04 AS rootfs

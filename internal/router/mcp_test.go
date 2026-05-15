@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -58,7 +59,7 @@ func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, op
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
 		k8sClient: fc,
 		k8sReader: fc,
-		auth:      newTokenReviewer(kubefake.NewSimpleClientset(), 30*time.Second, "test-token"),
+		auth:      newTokenReviewer(context.Background(), kubefake.NewSimpleClientset(), 30*time.Second, "test-token"),
 		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
 			MTLSDisabled: true,
 		}),

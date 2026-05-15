@@ -55,7 +55,7 @@ func main() {
 	}
 	slog.Info("informer cache synced")
 
-	srv := router.NewServer(*cfg, k8sClient, k8sCache, cs)
+	srv := router.NewServer(ctx, *cfg, k8sClient, k8sCache, cs)
 	mux := srv.Handler()
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,

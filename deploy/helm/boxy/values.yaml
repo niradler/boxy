@@ -74,8 +74,9 @@ router:
 # --- Controller (nsjail StatefulSet) ---
 # The controller pod requires CAP_SYS_ADMIN for overlayfs per-sandbox filesystem.
 controller:
-  # token enforces X-Boxy-Controller-Token on every API request (non-healthz).
-  # Set to a strong random string in production. Empty = check disabled (unsafe when mTLS is off).
+  # token overrides the auto-generated controller token stored in the boxy-tokens secret.
+  # Leave empty to have Helm generate and persist a random 32-char token automatically.
+  # The token is injected as BOXY_CONTROLLER_TOKEN and enforced on all non-healthz endpoints.
   token: ""
   image:
     repository: niradler/boxy-controller

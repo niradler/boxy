@@ -67,13 +67,11 @@ spec:
               value: {{ .Values.controller.port | quote }}
             - name: BOXY_MTLS_DISABLED
               value: {{ .Values.mtls.disabled | quote }}
-            {{- if .Values.controller.token }}
             - name: BOXY_CONTROLLER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "boxy.fullname" . }}-tokens
                   key: controller-token
-            {{- end }}
             - name: BOXY_TLS_CA_PATH
               value: "/tls/ca.crt"
             - name: BOXY_TLS_CLIENT_CERT_PATH
@@ -98,6 +96,20 @@ spec:
                   "patches"         .Values.router.defaultSandbox.patches
                 | toJson | quote }}
             {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.router.resources | nindent 12 }}
           volumeMounts:

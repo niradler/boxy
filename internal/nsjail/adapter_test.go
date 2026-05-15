@@ -149,20 +149,24 @@ func TestBuildNsjailConfig_NetworkIsolatedByDefault(t *testing.T) {
 	sb := makeSandbox(api.SandboxCreateBody{}, "/tmp/ws", "/tmp/bin")
 	cfg := a.buildNsjailConfig(sb, a.cfg.DefaultRootfs, nil, 0)
 
-	if !cfg.DisableCloneNewNet {
-		t.Error("DisableCloneNewNet must be true by default (sandbox must not inherit pod netns)")
+	// DisableCloneNewNet=false → nothing emitted → nsjail uses its default clone_newnet: true
+	// → new isolated network namespace → sandbox cannot reach pod network or internet.
+	if cfg.DisableCloneNewNet {
+		t.Error("DisableCloneNewNet must be false by default (sandbox gets a fresh, isolated network namespace)")
 	}
 }
 
-func TestBuildNsjailConfig_InternetEnablesNetNS(t *testing.T) {
+func TestBuildNsjailConfig_InternetInheritsHostNetNS(t *testing.T) {
 	a, _ := newTestAdapter(t)
 	sb := makeSandbox(api.SandboxCreateBody{
 		Network: &api.SandboxNetworkConfig{AllowInternetAccess: true},
 	}, "/tmp/ws", "/tmp/bin")
 	cfg := a.buildNsjailConfig(sb, a.cfg.DefaultRootfs, nil, 0)
 
-	if cfg.DisableCloneNewNet {
-		t.Error("DisableCloneNewNet must be false when allowInternetAccess=true (sandbox needs pod netns)")
+	// DisableCloneNewNet=true → emits clone_newnet: false → sandbox inherits pod's netns
+	// → internet accessible (gated by the controller pod's NetworkPolicy).
+	if !cfg.DisableCloneNewNet {
+		t.Error("DisableCloneNewNet must be true when allowInternetAccess=true (sandbox inherits pod netns)")
 	}
 }
 
@@ -197,6 +201,20 @@ func TestCreate_BinDirCreated(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sb.binDir, "yq")); err == nil {
 		t.Error("yq should not be in binDir (not in AllowedBinaries)")
+	}
+}
+
+func TestCreate_CleanupOnBinaryFailure(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	req := &api.SandboxCreateBody{
+		SandboxID:       "cleanup-test",
+		AllowedBinaries: []string{"nonexistent-binary-xyz"},
+	}
+	_ = a.Create(context.TODO(), req)
+	// The sandbox base dir must have been cleaned up despite the failure.
+	base := filepath.Join(a.cfg.SandboxRoot, "cleanup-test")
+	if _, err := os.Stat(base); err == nil {
+		t.Error("sandbox base directory should be removed after Create failure")
 	}
 }
 
@@ -276,6 +294,24 @@ func TestDelete_NotFound(t *testing.T) {
 // -----------------------------------------------------------------------
 // validateCreateRequest
 // -----------------------------------------------------------------------
+
+func TestValidateCreateRequest_EmptyHostPathRejected(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	// Non-tmpfs volume with empty host_path must be rejected.
+	req := &api.SandboxCreateBody{
+		Volumes: []api.VolumeMount{{GuestPath: "/data", Type: "bind", HostPath: ""}},
+	}
+	if err := a.validateCreateRequest(req); err == nil {
+		t.Error("empty host_path for non-tmpfs volume should be rejected")
+	}
+	// tmpfs volume with no host_path is fine.
+	req2 := &api.SandboxCreateBody{
+		Volumes: []api.VolumeMount{{GuestPath: "/tmp2", Type: "tmpfs"}},
+	}
+	if err := a.validateCreateRequest(req2); err != nil {
+		t.Errorf("tmpfs volume with empty host_path should pass: %v", err)
+	}
+}
 
 func TestValidateCreateRequest_RootUserBlocked(t *testing.T) {
 	a, _ := newTestAdapter(t)
