@@ -51,6 +51,13 @@ spec:
               value: {{ .Values.operator.terminatedRetentionSeconds | quote }}
             - name: BOXY_MTLS_DISABLED
               value: {{ .Values.mtls.disabled | quote }}
+            {{- if .Values.controller.token }}
+            - name: BOXY_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: controller-token
+            {{- end }}
             - name: BOXY_TLS_CA_PATH
               value: "/tls/ca.crt"
             - name: BOXY_TLS_CLIENT_CERT_PATH
