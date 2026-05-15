@@ -22,8 +22,6 @@ type ExecResponseBody struct {
 	TimedOut bool   `json:"timedOut,omitempty"`
 }
 
-// VMConfig configures the MicroVM runtime (passed to microsandbox).
-
 type VMConfig struct {
 	Image          string     `json:"image,omitempty"`
 	MemoryMB       int        `json:"memoryMb,omitempty"`
@@ -51,7 +49,6 @@ type VMScript struct {
 	Content string `json:"content"`
 }
 
-// MacvlanConfig configures a MACVLAN interface attached to the sandbox network namespace.
 type MacvlanConfig struct {
 	Interface string `json:"interface"`
 	IP        string `json:"ip,omitempty"`
@@ -60,7 +57,6 @@ type MacvlanConfig struct {
 	MAC       string `json:"mac,omitempty"`
 }
 
-// SandboxNetworkConfig configures all VM-level networking via microsandbox.
 type SandboxNetworkConfig struct {
 	Enabled             *bool          `json:"enabled,omitempty"`
 	AllowInternetAccess bool           `json:"allowInternetAccess,omitempty"`

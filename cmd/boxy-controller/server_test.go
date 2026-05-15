@@ -85,7 +85,7 @@ func TestTokenMiddleware_HealthzBypassesToken(t *testing.T) {
 	handler := s.tokenMiddleware(inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	// No token header — healthz must still pass through.
+	// No token header - healthz must still pass through.
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

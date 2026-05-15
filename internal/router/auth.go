@@ -18,10 +18,8 @@ type cachedResult struct {
 	storedAt time.Time
 }
 
-// tokenReviewer validates Kubernetes SA bearer tokens via the TokenReview API
-// and caches positive results for ttl to avoid hammering the API server.
-// The raw token is never stored — only its SHA-256 fingerprint is used as the
-// cache key.
+// tokenReviewer validates SA bearer tokens via TokenReview, caching results.
+// The raw token is never stored - only its SHA-256 fingerprint is used as the cache key.
 type tokenReviewer struct {
 	cs       kubernetes.Interface
 	ttl      time.Duration
@@ -42,10 +40,7 @@ func newTokenReviewer(ctx context.Context, cs kubernetes.Interface, ttl time.Dur
 	return tr
 }
 
-// authenticate validates a bearer token and returns the K8s UserInfo on success.
-// On a cache hit that is still within ttl, no K8s API call is made.
 func (tr *tokenReviewer) authenticate(ctx context.Context, token string) (*authv1.UserInfo, error) {
-	// Static bypass: allows local dev and e2e without needing an SA token.
 	if tr.devToken != "" && token == tr.devToken {
 		u := authv1.UserInfo{Username: "dev-token"}
 		return &u, nil
@@ -83,8 +78,7 @@ func (tr *tokenReviewer) authenticate(ctx context.Context, token string) (*authv
 	return &rev.Status.User, nil
 }
 
-// evictLoop removes stale entries every 2×ttl to bound memory use.
-// It exits when ctx is cancelled (typically on server shutdown).
+// evictLoop removes stale entries; exits when ctx is cancelled.
 func (tr *tokenReviewer) evictLoop(ctx context.Context) {
 	tick := time.NewTicker(tr.ttl * 2)
 	defer tick.Stop()
@@ -104,19 +98,16 @@ func (tr *tokenReviewer) evictLoop(ctx context.Context) {
 	}
 }
 
-// tokenHash returns the hex-encoded SHA-256 of the token.
 // The raw token is never retained in memory beyond this call.
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
 
-// ctxKey is the unexported context key type for this package.
 type ctxKey string
 
 const authUserKey ctxKey = "authUser"
 
-// userFromContext retrieves the authenticated UserInfo set by withAuth.
 func userFromContext(ctx context.Context) *authv1.UserInfo {
 	u, _ := ctx.Value(authUserKey).(*authv1.UserInfo)
 	return u

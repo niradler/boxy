@@ -111,8 +111,6 @@ func waitReady(t *testing.T, base, tok string, sb api.SandboxResponseBody) {
 	t.Fatal("sandbox not ready")
 }
 
-// --- MCP tests ---
-
 type jsonRPCRequest struct {
 	Jsonrpc string `json:"jsonrpc"`
 	ID      any    `json:"id,omitempty"`
@@ -161,7 +159,6 @@ func postMCP(t *testing.T, base, tok string, rpcReq jsonRPCRequest, sandboxID st
 func TestMCPBashTool(t *testing.T) {
 	base, tok := testCreds(t)
 
-	// Create a sandbox.
 	create := api.SandboxCreateBody{
 		SessionID:  "e2e-mcp-session",
 		SandboxID:  "e2e-mcp-" + strconv.FormatInt(time.Now().UnixNano(), 10),
@@ -187,7 +184,6 @@ func TestMCPBashTool(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&sb)
 	waitReady(t, base, tok, sb)
 
-	// MCP initialize.
 	initResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 1, Method: "initialize",
 		Params: map[string]any{
@@ -200,7 +196,6 @@ func TestMCPBashTool(t *testing.T) {
 		t.Fatalf("initialize error: %s", initResp.Error.Message)
 	}
 
-	// MCP tools/list.
 	listResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 2, Method: "tools/list",
 	}, "")
@@ -211,7 +206,6 @@ func TestMCPBashTool(t *testing.T) {
 		t.Fatalf("tools/list missing bash tool: %s", listResp.Result)
 	}
 
-	// MCP tools/call — bash.
 	callResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 3, Method: "tools/call",
 		Params: map[string]any{
@@ -226,7 +220,6 @@ func TestMCPBashTool(t *testing.T) {
 		t.Fatalf("unexpected tools/call result: %s", callResp.Result)
 	}
 
-	// Clean up.
 	delReq, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+create.SandboxID, nil)
 	delReq.Header.Set("Authorization", "Bearer "+tok)
 	_, _ = httpClient().Do(delReq)
@@ -272,7 +265,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 	waitReady(t, base, tok, sbARet)
 	waitReady(t, base, tok, sbBRet)
 
-	// Sandbox A writes a secret file via MCP.
 	writeResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 1, Method: "tools/call",
 		Params: map[string]any{
@@ -287,7 +279,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 		t.Fatalf("unexpected write result: %s", writeResp.Result)
 	}
 
-	// Sandbox B tries to read Sandbox A's file via MCP — must not see it.
 	readResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 2, Method: "tools/call",
 		Params: map[string]any{
@@ -299,7 +290,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 		t.Fatalf("read via MCP error: %s", readResp.Error.Message)
 	}
 
-	// Parse the tool result content.
 	var toolRes struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -337,7 +327,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 		t.Fatal("expected tool-level error for non-existent sandbox, got success")
 	}
 
-	// Cleanup.
 	for _, id := range []string{sbA.SandboxID, sbB.SandboxID} {
 		delReq, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+id, nil)
 		delReq.Header.Set("Authorization", "Bearer "+tok)
@@ -417,7 +406,7 @@ func TestInternetAccessDNS(t *testing.T) {
 	t.Cleanup(func() { deleteSandbox(t, base, tok, sb.SandboxID) })
 	waitReady(t, base, tok, sb)
 
-	// /etc/resolv.conf must have nameserver entries — validates the bind-mount fix.
+	// /etc/resolv.conf must have nameserver entries - validates the resolv.conf bind-mount.
 	resolvOut := postExec(t, base, tok, api.ExecRequestBody{
 		SessionID:      "e2e-dns",
 		SandboxID:      sb.SandboxID,
@@ -426,10 +415,10 @@ func TestInternetAccessDNS(t *testing.T) {
 		TimeoutSeconds: 10,
 	})
 	if strings.TrimSpace(resolvOut.Stdout) == "0" {
-		t.Fatalf("/etc/resolv.conf has no nameserver entries — resolv.conf bind-mount fix not applied (stderr=%q)", resolvOut.Stderr)
+		t.Fatalf("/etc/resolv.conf has no nameserver entries - resolv.conf bind-mount not applied (stderr=%q)", resolvOut.Stderr)
 	}
 
-	// DNS resolution — requires controller.networkPolicy.allowInternetEgress=true.
+	// DNS resolution requires controller.networkPolicy.allowInternetEgress=true.
 	// Skip gracefully if egress is blocked at the network layer.
 	dnsOut := postExec(t, base, tok, api.ExecRequestBody{
 		SessionID:      "e2e-dns",
@@ -440,7 +429,7 @@ func TestInternetAccessDNS(t *testing.T) {
 	})
 	ip := strings.TrimSpace(dnsOut.Stdout)
 	if ip == "blocked" || ip == "" {
-		t.Skip("DNS resolution blocked — set controller.networkPolicy.allowInternetEgress=true to test end-to-end")
+		t.Skip("DNS resolution blocked - set controller.networkPolicy.allowInternetEgress=true to test end-to-end")
 	}
 	if !strings.Contains(ip, ".") && !strings.Contains(ip, ":") {
 		t.Fatalf("DNS resolved to unexpected output %q", ip)

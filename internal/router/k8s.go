@@ -9,7 +9,6 @@ import (
 	"boxy.dev/boxy/internal/kube"
 )
 
-// BuildK8sCache creates a controller-runtime cache scoped to the sandbox namespace.
 func BuildK8sCache(scheme *runtime.Scheme, namespace string) (cache.Cache, error) {
 	restCfg, err := kube.BuildConfig()
 	if err != nil {
@@ -21,7 +20,6 @@ func BuildK8sCache(scheme *runtime.Scheme, namespace string) (cache.Cache, error
 	})
 }
 
-// BuildK8sClient creates a controller-runtime client.
 func BuildK8sClient(scheme *runtime.Scheme) (client.Client, error) {
 	restCfg, err := kube.BuildConfig()
 	if err != nil {
@@ -30,7 +28,6 @@ func BuildK8sClient(scheme *runtime.Scheme) (client.Client, error) {
 	return client.New(restCfg, client.Options{Scheme: scheme})
 }
 
-// BuildClientset creates a typed Kubernetes clientset used for TokenReview calls.
 func BuildClientset() (kubernetes.Interface, error) {
 	restCfg, err := kube.BuildConfig()
 	if err != nil {

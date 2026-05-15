@@ -18,7 +18,6 @@ import (
 	"boxy.dev/boxy/internal/api"
 )
 
-// Adapter is the sandbox lifecycle interface implemented by NsjailAdapter.
 type Adapter interface {
 	Create(ctx context.Context, req *api.SandboxCreateBody) error
 	Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int) (*api.ExecResponseBody, error)
@@ -40,7 +39,6 @@ func errConflict(id string) *AdapterError    { return &AdapterError{409, "sandbo
 func errNotFound(id string) *AdapterError    { return &AdapterError{404, "sandbox not found: " + id} }
 func errInternal(msg string) *AdapterError   { return &AdapterError{500, msg} }
 
-// AdapterConfig holds paths injected at startup (mirrors the Rust Config fields).
 type AdapterConfig struct {
 	NsjailPath     string
 	DefaultRootfs  string
@@ -69,8 +67,6 @@ func NewNsjailAdapter(cfg AdapterConfig) *NsjailAdapter {
 	}
 }
 
-// Create validates the request, creates the per-sandbox workspace directory, and
-// registers the sandbox in memory.
 func (a *NsjailAdapter) Create(ctx context.Context, req *api.SandboxCreateBody) error {
 	if err := a.validateCreateRequest(req); err != nil {
 		return err
@@ -107,8 +103,6 @@ func (a *NsjailAdapter) Create(ctx context.Context, req *api.SandboxCreateBody) 
 	return nil
 }
 
-// Exec runs a command inside the named sandbox via nsjail.
-// Each call writes a fresh nsjail config file, invokes nsjail, then removes the file.
 func (a *NsjailAdapter) Exec(
 	ctx context.Context,
 	sandboxID string,
@@ -221,7 +215,6 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 
 func (lw *limitWriter) String() string { return lw.buf.String() }
 
-// Delete removes the sandbox workspace and deregisters the sandbox.
 func (a *NsjailAdapter) Delete(ctx context.Context, sandboxID string) error {
 	a.mu.Lock()
 	sb, ok := a.sandboxes[sandboxID]
@@ -241,7 +234,6 @@ func (a *NsjailAdapter) Delete(ctx context.Context, sandboxID string) error {
 	return nil
 }
 
-// ListIDs returns the IDs of all live sandboxes.
 func (a *NsjailAdapter) ListIDs() []string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -252,15 +244,12 @@ func (a *NsjailAdapter) ListIDs() []string {
 	return ids
 }
 
-// Count returns the number of live sandboxes.
 func (a *NsjailAdapter) Count() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.sandboxes)
 }
 
-// buildNsjailConfig constructs a NsjailConfig for a single exec invocation.
-// It merges sandbox-level settings with per-exec env and timeout.
 func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv map[string]string, timeoutSecs int) *NsjailConfig {
 	// Processes run as uid 0 inside nsjail. Running as a non-root uid requires
 	// either user namespaces (blocked by Docker Desktop / most container runtimes)
@@ -272,7 +261,7 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		Log:                 "/dev/null",
 		Chroot:              rootfs,
 		DisableCloneNewUser: true,
-		DisableCloneNewNet:  false, // default: isolated (nsjail creates a fresh network namespace)
+		DisableCloneNewNet:  false,
 	}
 
 	if sb.req.VM != nil {
@@ -310,16 +299,14 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		cfg.TimeLimit = uint32(timeoutSecs)
 	}
 
-	// Network: when AllowInternetAccess is requested the sandbox inherits the pod's
-	// network namespace (DisableCloneNewNet=true → clone_newnet: false in textproto)
-	// so it can reach whatever the pod can reach.  Default is isolated (false → nsjail
-	// creates a fresh netns with no external routes).
+	// DisableCloneNewNet=true means "disable the clone_newnet flag" which paradoxically
+	// gives internet access (sandbox inherits pod netns instead of getting an isolated one).
 	if sb.req.Network != nil {
 		net := sb.req.Network
 		if net.Enabled != nil && !*net.Enabled {
-			// network explicitly disabled: leave DisableCloneNewNet = false (isolated)
+			// leave DisableCloneNewNet = false (isolated)
 		} else if net.AllowInternetAccess {
-			cfg.DisableCloneNewNet = true // inherit pod netns → internet accessible
+			cfg.DisableCloneNewNet = true
 		}
 		if net.UsePasta {
 			cfg.UsePasta = true
@@ -335,7 +322,6 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		}
 	}
 
-	// Standard mounts.
 	cfg.Mounts = append(cfg.Mounts,
 		MountPt{Src: sb.workspace, Dst: "/workspace", Rw: true, IsBind: true},
 		MountPt{Dst: "/tmp", Fstype: "tmpfs", Rw: true},
@@ -358,7 +344,6 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		})
 	}
 
-	// Sandbox volumes.
 	for _, vol := range sb.req.Volumes {
 		if vol.Type == "tmpfs" {
 			cfg.Mounts = append(cfg.Mounts, MountPt{Dst: vol.GuestPath, Fstype: "tmpfs", Rw: true})
@@ -376,10 +361,7 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		}
 	}
 
-	// Bind-mount the per-sandbox bin directory as /usr/local/bin.
-	// binDir is populated at Create() with copies of the allowed binaries, so each
-	// sandbox sees only its own binaries. Being on the host FS (not a tmpfs),
-	// writes inside the sandbox persist across exec calls.
+	// Each sandbox gets its own /usr/local/bin with only its allowedBinaries pre-copied in.
 	cfg.Mounts = append(cfg.Mounts, MountPt{
 		Src:    sb.binDir,
 		Dst:    "/usr/local/bin",
@@ -404,7 +386,6 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 	return cfg
 }
 
-// validateCreateRequest enforces the same input constraints as the Rust implementation.
 func (a *NsjailAdapter) validateCreateRequest(req *api.SandboxCreateBody) error {
 	if req.VM != nil {
 		if req.VM.Image != "" {
@@ -474,13 +455,11 @@ func resolveCommandInChroot(command, chroot string) string {
 	return command
 }
 
-// isUnderPath reports whether child is the same as or a subdirectory of parent.
 func isUnderPath(child, parent string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && !strings.HasPrefix(rel, "..")
 }
 
-// copyExec copies src to dst with executable permissions.
 func copyExec(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

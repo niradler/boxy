@@ -19,8 +19,8 @@ import (
 
 const conditionReady = "Ready"
 
-// ControllerPoolReconciler maintains ControllerPool.status — readyReplicas and
-// activeSandboxCount — by watching both ControllerPool and Sandbox events.
+// ControllerPoolReconciler maintains ControllerPool.status (readyReplicas and
+// activeSandboxCount) by watching both ControllerPool and Sandbox events.
 type ControllerPoolReconciler struct {
 	client.Client
 	cfg ReconcilerConfig

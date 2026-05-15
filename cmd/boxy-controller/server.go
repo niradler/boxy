@@ -204,9 +204,6 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutSeconds+5)*time.Second)
 	defer cancel()
 
-	// TODO: support streaming output (chunked/SSE) so callers see output as it arrives
-	// instead of waiting for the command to complete. Requires a streaming exec protocol
-	// between the controller and router.
 	result, err := s.adapter.Exec(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds)
 	if err != nil {
 		code, msg := adapterErrToHTTP(err)
