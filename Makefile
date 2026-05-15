@@ -1,7 +1,8 @@
 IMAGE_REPO?=boxydev
 TAG?=dev
+DEV_TAG?=e2e
 
-.PHONY: test lint docker-build kind-load e2e e2e-go e2e-scripts fmt
+.PHONY: test lint docker-build docker-build-dev test-dev-image kind-load kind-load-dev e2e e2e-go e2e-scripts fmt
 
 test:
 	go test ./...
@@ -30,6 +31,17 @@ kind-load: docker-build
 	kind load docker-image $(IMAGE_REPO)/boxy-router:$(TAG)
 	kind load docker-image $(IMAGE_REPO)/boxy-controller:$(TAG)
 	kind load docker-image $(IMAGE_REPO)/boxy-operator:$(TAG)
+
+docker-build-dev: _docker-build-dev-image test-dev-image
+
+_docker-build-dev-image:
+	docker build -f Dockerfile.controller.dev -t $(IMAGE_REPO)/boxy-controller-dev:$(DEV_TAG) .
+
+test-dev-image:
+	bash test/image/test-dev-image.sh $(IMAGE_REPO)/boxy-controller-dev:$(DEV_TAG)
+
+kind-load-dev: docker-build-dev
+	kind load docker-image $(IMAGE_REPO)/boxy-controller-dev:$(DEV_TAG)
 
 e2e:
 	bash local/kind-e2e.sh
