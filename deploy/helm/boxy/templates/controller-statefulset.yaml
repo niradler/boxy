@@ -40,6 +40,13 @@ spec:
               value: {{ .Values.controller.maxOutputBytes | default 6291456 | quote }}
             - name: BOXY_MTLS_DISABLED
               value: {{ .Values.mtls.disabled | quote }}
+            {{- if .Values.controller.token }}
+            - name: BOXY_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: controller-token
+            {{- end }}
             - name: BOXY_TLS_CERT_PATH
               value: "/tls/tls.crt"
             - name: BOXY_TLS_KEY_PATH

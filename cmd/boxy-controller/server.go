@@ -84,7 +84,28 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes", s.handleList)
 	mux.HandleFunc("DELETE /v1/sandboxes", s.handleDelete)
 	mux.HandleFunc("POST /v1/exec", s.handleExec)
-	return mux
+	return s.tokenMiddleware(mux)
+}
+
+// tokenMiddleware enforces BOXY_CONTROLLER_TOKEN on all non-healthz endpoints.
+// This is a defence-in-depth layer: even when mTLS is disabled (e.g. in dev),
+// a sandbox that shares the controller pod's network namespace cannot call the
+// controller API because the token is never exposed inside the sandbox.
+func (s *server) tokenMiddleware(next http.Handler) http.Handler {
+	if s.cfg.controllerToken == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Header.Get("X-Boxy-Controller-Token") != s.cfg.controllerToken {
+			writeErr(w, http.StatusUnauthorized, "missing or invalid controller token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {

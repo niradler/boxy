@@ -40,6 +40,7 @@ type Config struct {
 	TLSCAPath         string
 	TLSClientCertPath string
 	TLSClientKeyPath  string
+	ControllerToken   string
 
 	ControllerPort int32
 
@@ -106,6 +107,7 @@ func ConfigFromEnv() (*Config, error) {
 		TLSCAPath:         envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
 		TLSClientCertPath: envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
 		TLSClientKeyPath:  envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
+		ControllerToken:   envStr("BOXY_CONTROLLER_TOKEN", ""),
 		ControllerPort:    int32(envInt("BOXY_CONTROLLER_PORT", 8080)),
 		CreateTimeout:     time.Duration(envInt("BOXY_CREATE_TIMEOUT_SECONDS", 30)) * time.Second,
 	}
@@ -162,10 +164,11 @@ func NewServer(cfg Config, k8sClient client.Client, k8sReader client.Reader, cs 
 		k8sReader: k8sReader,
 		auth:      newTokenReviewer(cs, ttl, cfg.DevToken),
 		ctrlClient: ctrlclient.NewClient(ctrlclient.ClientConfig{
-			MTLSDisabled: cfg.MTLSDisabled,
-			CACertPath:   cfg.TLSCAPath,
-			ClientCert:   cfg.TLSClientCertPath,
-			ClientKey:    cfg.TLSClientKeyPath,
+			MTLSDisabled:    cfg.MTLSDisabled,
+			CACertPath:      cfg.TLSCAPath,
+			ClientCert:      cfg.TLSClientCertPath,
+			ClientKey:       cfg.TLSClientKeyPath,
+			ControllerToken: cfg.ControllerToken,
 		}),
 	}
 }

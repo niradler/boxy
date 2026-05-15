@@ -42,10 +42,11 @@ func IsStaleRouteError(err error) bool {
 }
 
 type ClientConfig struct {
-	MTLSDisabled bool
-	CACertPath   string
-	ClientCert   string
-	ClientKey    string
+	MTLSDisabled    bool
+	CACertPath      string
+	ClientCert      string
+	ClientKey       string
+	ControllerToken string
 }
 
 type Client struct {
@@ -60,10 +61,25 @@ func NewClient(cfg ClientConfig) *Client {
 	} else {
 		transport = buildMTLSTransport(cfg)
 	}
+	if cfg.ControllerToken != "" {
+		transport = &tokenTransport{token: cfg.ControllerToken, base: transport}
+	}
 	return &Client{
 		httpClient: &http.Client{Transport: transport},
 		cfg:        cfg,
 	}
+}
+
+// tokenTransport injects X-Boxy-Controller-Token on every request.
+type tokenTransport struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (t *tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("X-Boxy-Controller-Token", t.token)
+	return t.base.RoundTrip(r)
 }
 
 func buildMTLSTransport(cfg ClientConfig) http.RoundTripper {

@@ -47,10 +47,11 @@ func main() {
 	}
 
 	cc := ctrlclient.NewClient(ctrlclient.ClientConfig{
-		MTLSDisabled: envBool("BOXY_MTLS_DISABLED", false),
-		CACertPath:   envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
-		ClientCert:   envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
-		ClientKey:    envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
+		MTLSDisabled:    envBool("BOXY_MTLS_DISABLED", false),
+		CACertPath:      envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
+		ClientCert:      envStr("BOXY_TLS_CLIENT_CERT_PATH", "/tls/tls.crt"),
+		ClientKey:       envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
+		ControllerToken: envStr("BOXY_CONTROLLER_TOKEN", ""),
 	})
 
 	poolName := envStr("BOXY_CONTROLLER_POOL_NAME", stsName)

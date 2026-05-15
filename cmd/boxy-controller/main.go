@@ -23,6 +23,7 @@ type config struct {
 	tlsCertPath        string
 	tlsKeyPath         string
 	tlsCAPath          string
+	controllerToken    string
 	maxSandboxes       int
 	maxExecConcurrency int
 	maxOutputBytes     int
@@ -36,6 +37,7 @@ func configFromEnv() (*config, error) {
 		tlsCertPath:        envStr("BOXY_TLS_CERT_PATH", "/tls/tls.crt"),
 		tlsKeyPath:         envStr("BOXY_TLS_KEY_PATH", "/tls/tls.key"),
 		tlsCAPath:          envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
+		controllerToken:    envStr("BOXY_CONTROLLER_TOKEN", ""),
 		maxSandboxes:       envInt("BOXY_MAX_SANDBOXES", 20),
 		maxExecConcurrency: envInt("BOXY_MAX_EXEC_CONCURRENCY", 50),
 		maxOutputBytes:     envInt("BOXY_MAX_OUTPUT_BYTES", 6<<20),
