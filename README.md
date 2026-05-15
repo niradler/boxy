@@ -6,7 +6,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Helm chart](https://img.shields.io/badge/Helm-v0.0.2-0F1689?logo=helm)](oci://ghcr.io/niradler/charts/boxy)
+[![Helm chart](https://img.shields.io/badge/Helm-v0.0.3-0F1689?logo=helm)](oci://ghcr.io/niradler/charts/boxy)
 
 Each sandbox is an **nsjail** process jail: isolated filesystem, network namespace, and resource limits backed by a shared read-only Ubuntu 24.04 rootfs. No kernel modules, no container runtimes, no `/dev/kvm` — just a standard Linux node.
 
@@ -63,7 +63,7 @@ Images are published to Docker Hub and the Helm chart to GHCR OCI on every relea
 
 ```bash
 helm upgrade --install boxy oci://ghcr.io/niradler/charts/boxy \
-  --version 0.0.2 \
+  --version 0.0.3 \
   --namespace boxy --create-namespace \
   --set router.auth.staticToken="$(openssl rand -hex 16)"
 ```

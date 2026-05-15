@@ -73,7 +73,7 @@
           <span class="ml-2">Install with Helm (OCI)</span>
         </div>
         <code class="text-green-400 text-xs leading-relaxed">helm upgrade --install boxy oci://ghcr.io/niradler/charts/boxy \<br>
-  --version 0.0.2 --namespace boxy --create-namespace \<br>
+  --version 0.0.3 --namespace boxy --create-namespace \<br>
   --set router.auth.staticToken="$(openssl rand -hex 16)"</code>
       </div>
     </div>
@@ -352,7 +352,7 @@
         <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">1 · Install</h3>
         <pre><code class="language-bash rounded-xl">helm upgrade --install boxy \
   oci://ghcr.io/niradler/charts/boxy \
-  --version 0.0.2 \
+  --version 0.0.3 \
   --namespace boxy --create-namespace \
   --set router.auth.staticToken="$(openssl rand -hex 16)"</code></pre>
       </div>
