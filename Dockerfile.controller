@@ -49,9 +49,15 @@ ENV BOXY_NSJAIL_PATH=/usr/sbin/nsjail \
 
 RUN mkdir -p /var/lib/boxy/sandboxes
 
-# Requires CAP_SYS_ADMIN (overlayfs). Set in the pod securityContext:
+COPY cmd/boxy-controller/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Requires CAP_SYS_ADMIN (bind mounts, overlayfs). Set in pod securityContext:
 #   capabilities:
-#     add: [SYS_ADMIN, SETUID, SETGID, NET_ADMIN, SYS_CHROOT, MKNOD]
+#     add: [SYS_ADMIN, SETUID, SETGID, NET_ADMIN, SYS_CHROOT, MKNOD, SETPCAP]
+#
+# To pre-install apt packages into the sandbox rootfs at startup, set:
+#   BOXY_PREINSTALL_PACKAGES=python3,nodejs,curl,jq
 USER root
 
-ENTRYPOINT ["/usr/local/bin/boxy-controller"]
+ENTRYPOINT ["/entrypoint.sh"]

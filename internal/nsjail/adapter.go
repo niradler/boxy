@@ -322,8 +322,13 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		})
 	}
 
-	// Env vars: default PATH, then sandbox-level, then per-exec overrides.
-	cfg.Envar = append(cfg.Envar, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	// Env vars: baseline (PATH, HOME), then sandbox-level, then per-exec overrides.
+	// HOME=/workspace is the only non-PATH baseline: many tools (npm, pip, git)
+	// fail without a writable HOME directory. Sandbox env can override it.
+	cfg.Envar = append(cfg.Envar,
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/workspace",
+	)
 	for k, v := range sb.req.Env {
 		cfg.Envar = append(cfg.Envar, k+"="+v)
 	}

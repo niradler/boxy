@@ -102,11 +102,12 @@ The router is the only public-facing component. It:
 
 ```
 Max concurrent execs:    BOXY_MAX_CONCURRENCY        (default 100, semaphore-guarded)
-Max request body:        BOXY_MAX_BODY_BYTES          (default 1 MB)
-Max response output:     BOXY_MAX_OUTPUT_BYTES        (default 2 MB)
+Max request body:        BOXY_MAX_BODY_BYTES          (default 6 MB — bodies over this limit return HTTP 400)
 Max exec timeout:        BOXY_MAX_TIMEOUT_SECONDS     (default 3600s)
 Create timeout:          BOXY_CREATE_TIMEOUT_SECONDS  (default 30s)
 ```
+
+Output size enforcement is at the **controller**, not the router — see §4.3.
 
 **Stale-route detection:** When the router dials a controller and gets an error indicating the sandbox process no longer exists (stale route), it resets the Sandbox CR back to `Pending`, triggering reassignment by the operator. This handles controller pod restarts transparently.
 
@@ -173,6 +174,16 @@ Written in Go. Exposes a small HTTP API (mTLS-only) consumed by the router and o
 | `/healthz`      | GET    | Liveness check                                          |
 
 Internally, each sandbox is a directory at `/var/lib/boxy/sandboxes/{id}/workspace`. When exec is called, the controller builds an `NsjailConfig` struct, serializes it to protobuf text format, writes it to a temp file, and runs `nsjail --config <file> -- <cmd> <args>`. The temp file is removed after nsjail exits.
+
+**Per-pod concurrency limit:** A semaphore (`BOXY_MAX_EXEC_CONCURRENCY`, default 50) limits parallel exec calls per controller pod. When full, the controller returns HTTP 429. The router has its own independent semaphore (`BOXY_MAX_CONCURRENCY`, default 100).
+
+**Output truncation:** `BOXY_MAX_OUTPUT_BYTES` (default 6 MB) caps the combined size of stdout and stderr returned per exec. Output over this threshold is truncated with a `\n[output truncated]` suffix. The response still returns `200 OK` — the truncation is a data cap, not an error condition.
+
+**Package pre-installation:** `BOXY_PREINSTALL_PACKAGES` (comma-separated) installs apt packages into the Ubuntu rootfs via chroot at pod startup before the controller process starts. This makes those packages available to all sandboxes on the pod as part of the base rootfs. Combined with `allowedBinaries` (per-sandbox bind-mount allowlist), this provides two-level binary control: which packages exist on the pod, and which binaries each sandbox can access.
+
+**Env var isolation:** Sandboxes receive only explicitly configured environment variables. The controller injects exactly two baseline keys — `PATH` (standard search path) and `HOME=/workspace` (needed by tools like npm, pip, and git that expect a writable HOME) — then appends sandbox-level env, then per-exec env overrides. No host environment variables leak into sandboxes.
+
+**User identity:** Sandbox processes run as uid 0 (root) inside the nsjail container. Non-root uid mapping requires Linux user namespaces, which are blocked by most container runtimes (Docker Desktop, kind) when `clone_newuser` is combined with the CAP_SYS_ADMIN requirement for namespace setup. The security boundary is enforced by mount, PID, and network namespace isolation rather than uid separation.
 
 The `Adapter` interface abstracts the isolation backend — today only `nsjail` is implemented, but the interface allows future providers (e.g. gVisor, microVMs):
 
@@ -275,9 +286,8 @@ disable_clone_newuser: true
 disable_clone_newnet: true
 time_limit: 30
 cgroup_mem_max: 536870912
-uidmap { inside_id: "nobody" outside_id: "" count: 1 }
-gidmap { inside_id: "nobody" outside_id: "" count: 1 }
 envar: "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+envar: "HOME=/workspace"
 mount {
   src: "/var/lib/boxy/sandboxes/sandbox-A/workspace"
   dst: "/workspace"
@@ -290,6 +300,8 @@ mount {
   rw: true
 }
 ```
+
+`uidmap`/`gidmap` are omitted — sandbox processes run as uid 0. Linux user namespaces (`clone_newuser`) are disabled because most container runtimes block nested uid mapping; the security boundary is enforced by mount/PID/network namespace isolation instead.
 
 Optional fields (`seccomp_string`, `clone_newtime`, `iface_vs*` for MACVLAN, `use_pasta`) are emitted only when set.
 
@@ -388,15 +400,15 @@ Operator ---(mTLS: client cert + CA pin)-----> Controller
 
 ### Input Validation
 
-| Input                               | Guard                                                                   |
-| ----------------------------------- | ----------------------------------------------------------------------- |
-| `sandboxId` / `sessionId` / `owner` | Non-empty, required                                                     |
-| `ttlSeconds`                        | 0–604800 (7 days)                                                       |
-| `env`                               | Max 64 keys; blocked prefixes `KUBERNETES_*`, `BOXY_*`; values <= 16 KB |
-| `command` + `args`                  | Max 256 args                                                            |
-| `timeoutSeconds`                    | 1–3600                                                                  |
-| Request body                        | <= 1 MB                                                                 |
-| Response output                     | <= 2 MB (truncated, not errored)                                        |
+| Input                               | Guard                                                                       |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| `sandboxId` / `sessionId` / `owner` | Non-empty, required                                                         |
+| `ttlSeconds`                        | 0–604800 (7 days)                                                           |
+| `env`                               | Max 64 keys; blocked prefixes `KUBERNETES_*`, `BOXY_*`; values <= 16 KB     |
+| `command` + `args`                  | Max 256 args                                                                |
+| `timeoutSeconds`                    | 1–3600                                                                      |
+| Request body                        | <= 6 MB (enforced at router via `http.MaxBytesReader`; returns HTTP 400)    |
+| Exec output (stdout + stderr each)  | <= 6 MB per field (enforced at controller; truncated with notice, not HTTP error) |
 
 ### Container Capabilities (controller pod)
 
@@ -407,7 +419,7 @@ runAsUser: 0  (root required for namespace setup)
 allowPrivilegeEscalation: false
 ```
 
-The controller runs as root inside its container because nsjail needs `SYS_ADMIN` and `NET_ADMIN` to create namespaces. Each sandbox process inside nsjail drops to the configured user (default `nobody`).
+The controller runs as root inside its container because nsjail needs `SYS_ADMIN` and `NET_ADMIN` to create namespaces. Sandbox processes also run as uid 0 — see §4.3 for why user namespace-based uid remapping is disabled.
 
 ### Threat Model
 
@@ -425,7 +437,7 @@ The controller runs as root inside its container because nsjail needs `SYS_ADMIN
 **Known gaps:**
 
 - **No per-caller tenant isolation.** All callers share the same token and can name/access any sandbox by ID.
-- **No per-caller tenant isolation.** All callers share the same token and can name/access any sandbox by ID.
+- **Sandbox processes run as uid 0.** Linux user namespace-based uid remapping is disabled (blocked by Docker Desktop / most container runtimes when combined with CAP_SYS_ADMIN). The security boundary is mount/PID/network namespace isolation rather than uid separation.
 
 ---
 
@@ -544,6 +556,31 @@ kubectl get pods -n boxy -l boxy.dev/controller=true
 # Sandboxes stuck in Creating (operator not reconciling)
 kubectl get sandbox -n boxy -o wide | grep Creating
 ```
+
+### mTLS Certificate Management
+
+Generate CA + server + client certs for a production deployment:
+
+```bash
+# Generate to ./certs/ with default 3-year validity
+bash local/gen-mtls-certs.sh
+
+# Custom output dir and validity (e.g. 1 year)
+bash local/gen-mtls-certs.sh ./my-certs 365
+
+# Load into Kubernetes and deploy
+kubectl -n boxy create secret generic boxy-mtls \
+  --from-file=ca.crt=certs/ca.crt \
+  --from-file=tls.crt=certs/server.crt \
+  --from-file=tls.key=certs/server.key
+
+kubectl -n boxy create secret generic boxy-mtls-client \
+  --from-file=ca.crt=certs/ca.crt \
+  --from-file=tls.crt=certs/client.crt \
+  --from-file=tls.key=certs/client.key
+```
+
+The script generates a 4096-bit CA, a 2048-bit server cert (SAN includes the headless service DNS pattern), and a 2048-bit client cert with `extendedKeyUsage=clientAuth`. Validity is configurable; default is 1095 days (3 years).
 
 ### Scale Tuning
 

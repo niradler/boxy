@@ -111,7 +111,7 @@ Create a sandbox. Returns `201` when the sandbox is `Running`.
 | Field | Type | Description |
 |---|---|---|
 | `ttlSeconds` | int | Sandbox TTL (sliding window, refreshed on each exec). `0` = no expiry. |
-| `env` | map | Environment variables. `KUBERNETES_*` and `BOXY_*` prefixes are blocked. Max 64 keys. |
+| `env` | map | Environment variables explicitly passed to the sandbox. `KUBERNETES_*` and `BOXY_*` prefixes are blocked. Max 64 keys. Sandboxes receive only these keys plus `PATH` and `HOME=/workspace` — no host environment leaks through. |
 | `allowedBinaries` | string[] | Binaries (e.g. `"curl"`, `"python3"`) bind-mounted read-only from the controller image. |
 | `vm` | object | Resource and identity config — see below. |
 | `network` | object | Network policy — see below. |
@@ -168,14 +168,15 @@ Deletes the sandbox and removes its CR.
 
 | Code | Meaning |
 |---|---|
-| `400` | Bad request (missing required field, invalid JSON, blocked env prefix). |
+| `400` | Bad request (missing required field, invalid JSON, blocked env prefix, body exceeds 6 MB limit). |
 | `401` | Missing, expired, or invalid bearer token (SA token rejected by TokenReview, or static token mismatch). |
 | `404` | Sandbox not found. |
 | `409` | Sandbox already exists. |
-| `413` | Output cap exceeded. |
-| `429` | Concurrency limit hit. |
+| `429` | Concurrency limit hit (router or controller semaphore full). |
 | `502` | Controller pod unreachable or returned an error. |
 | `503` | Controller pod not ready. |
+
+> **Output truncation:** exec responses that exceed `BOXY_MAX_OUTPUT_BYTES` (default 6 MB) are truncated at the controller with a `\n[output truncated]` suffix. The response still returns `200 OK`.
 
 ## MCP server
 
@@ -218,7 +219,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
   - **SA token (production):** Any valid Kubernetes ServiceAccount token, validated via the TokenReview API. Caller identity is the K8s `UserInfo` (username + groups). No static secret to manage.
   - **Static token (dev/e2e):** Set `BOXY_ROUTER_TOKEN`; requests presenting this token are accepted as `dev-token` without a TokenReview call. Omit in production.
   No per-caller RBAC — all authenticated callers have equal access.
-- **mTLS:** Router and operator dial controllers using a Helm-generated CA with mutual cert verification. No hostname verification; identity is CA membership. Disable with `BOXY_MTLS_DISABLED=true` for local dev.
+- **mTLS:** Router and operator dial controllers using a CA with mutual cert verification. No hostname verification; identity is CA membership. Disable with `BOXY_MTLS_DISABLED=true` for local dev. Generate production certs with `bash local/gen-mtls-certs.sh [output-dir] [validity-days]` (default: 3 years).
 - **NetworkPolicy:** Default-deny egress on controller pods (DNS only). Per-sandbox isolation enforced by nsjail network namespaces, not Kubernetes policy.
 - **Controller pod capabilities:** `SYS_ADMIN`, `SETUID`, `SETGID`, `NET_ADMIN`, `SYS_CHROOT`, `MKNOD`, `SETPCAP`. All others dropped. `allowPrivilegeEscalation: false`.
 
@@ -236,8 +237,8 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | `BOXY_TLS_CA_PATH` | `/tls/ca.crt` | |
 | `BOXY_TLS_CLIENT_CERT_PATH` | `/tls/tls.crt` | |
 | `BOXY_TLS_CLIENT_KEY_PATH` | `/tls/tls.key` | |
-| `BOXY_MAX_BODY_BYTES` | `1048576` | Max request body size (1 MB). |
-| `BOXY_MAX_OUTPUT_BYTES` | `2097152` | Max exec output size (2 MB, truncated not errored). |
+| `BOXY_MAX_BODY_BYTES` | `6291456` | Max inbound request body (6 MB). Requests over this limit return HTTP 400. |
+| `BOXY_MAX_OUTPUT_BYTES` | `6291456` | Placeholder — output truncation is enforced at the controller. This value is unused by the router. |
 | `BOXY_MAX_TIMEOUT_SECONDS` | `3600` | |
 | `BOXY_MAX_CONCURRENCY` | `100` | Concurrent execs per router replica. |
 | `BOXY_MAX_ARGS` | `256` | |
@@ -273,6 +274,9 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | `BOXY_NSJAIL_ROOTFS` | `/rootfs/ubuntu-24.04` | Default read-only rootfs. |
 | `BOXY_NSJAIL_SANDBOX_ROOT` | `/var/lib/boxy/sandboxes` | Host path for per-sandbox workspace directories. |
 | `BOXY_NSJAIL_BINARIES_DIR` | `/usr/local/bin` | Host directory for `allowedBinaries`. |
+| `BOXY_MAX_EXEC_CONCURRENCY` | `50` | Max parallel exec calls handled concurrently per controller pod. Returns HTTP 429 when full. |
+| `BOXY_MAX_OUTPUT_BYTES` | `6291456` | Max combined stdout/stderr per exec (6 MB). Output over this limit is truncated with a `\n[output truncated]` suffix. |
+| `BOXY_PREINSTALL_PACKAGES` | — | Comma-separated apt packages to install into the Ubuntu rootfs at pod startup. Installed once via chroot on start. Example: `python3,nodejs,curl,jq`. Requires `CAP_SYS_ADMIN`. |
 
 ## Development
 
@@ -317,6 +321,10 @@ cmd/boxy-operator/       Operator entry point (Go)
 cmd/boxy-controller/     Controller entry point (Go)
   main.go                Config, mTLS server setup, graceful shutdown
   server.go              HTTP handlers for /v1/sandboxes, /v1/exec, /healthz
+  entrypoint.sh          Container entrypoint; installs apt packages (BOXY_PREINSTALL_PACKAGES) into rootfs before starting controller
+local/
+  gen-mtls-certs.sh      Generate CA + server + client mTLS certs for production deployment
+  setup-mcp-dev.sh       Wire Claude Code (MCP) to a local boxy deployment
 internal/
   api/                   Shared types and validation
   nsjail/                nsjail adapter and proto-format config builder

@@ -84,6 +84,10 @@ controller:
   maxSandboxes: 20
   maxExecConcurrency: 50   # max parallel exec calls a single controller pod handles
   maxOutputBytes: 6291456  # 6 MiB — truncate stdout/stderr above this size
+  # preinstallPackages: comma-separated list of apt packages to install into the
+  # sandbox rootfs at pod startup. e.g. "python3,nodejs,curl,jq"
+  # Packages are installed once per pod lifetime (re-installs on restart).
+  preinstallPackages: ""
   serviceAccount: boxy-controller
   logLevel: "warn" # off | error | warn | info | debug | trace
 
