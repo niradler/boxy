@@ -18,6 +18,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&Sandbox{},
 		&SandboxList{},
+		&ControllerPool{},
+		&ControllerPoolList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

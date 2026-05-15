@@ -23,6 +23,7 @@ type ReconcilerConfig struct {
 	Namespace              string
 	StatefulSetName        string
 	HeadlessServiceName    string
+	ControllerPoolName     string
 	ControllerPort         int32
 	MaxSandboxesPerCtrl    int
 	MaxControllerReplicas  int32
@@ -136,13 +137,14 @@ func (r *SandboxReconciler) reconcilePending(ctx context.Context, sandbox *boxyv
 		}
 	}
 
-	podName, address, err := r.assignController(ctx, sandbox)
+	podName, address, err := r.assignController(ctx)
 	if err != nil {
 		r.log.Info("no controller capacity, will retry", "sandbox", sandbox.Name, "err", err)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	sandbox.Status.Phase = boxyv1.SandboxPhaseCreating
+	sandbox.Status.ControllerPool = r.cfg.ControllerPoolName
 	sandbox.Status.ControllerPod = podName
 	sandbox.Status.ControllerAddress = address
 	sandbox.Status.Port = r.cfg.ControllerPort
@@ -299,7 +301,7 @@ func (r *SandboxReconciler) controllerURL(sandbox *boxyv1.Sandbox) string {
 	return fmt.Sprintf("%s://%s:%d", scheme, sandbox.Status.ControllerAddress, sandbox.Status.Port)
 }
 
-func (r *SandboxReconciler) assignController(ctx context.Context, sandbox *boxyv1.Sandbox) (podName, address string, err error) {
+func (r *SandboxReconciler) assignController(ctx context.Context) (podName, address string, err error) {
 	var podList corev1.PodList
 	if err := r.List(ctx, &podList,
 		client.InNamespace(r.cfg.Namespace),

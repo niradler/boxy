@@ -53,10 +53,13 @@ func main() {
 		ClientKey:    envStr("BOXY_TLS_CLIENT_KEY_PATH", "/tls/tls.key"),
 	})
 
-	reconciler := operator.NewSandboxReconciler(mgr.GetClient(), cc, operator.ReconcilerConfig{
+	poolName := envStr("BOXY_CONTROLLER_POOL_NAME", stsName)
+
+	cfg := operator.ReconcilerConfig{
 		Namespace:              ns,
 		StatefulSetName:        stsName,
 		HeadlessServiceName:    headlessSvc,
+		ControllerPoolName:     poolName,
 		ControllerPort:         int32(envInt("BOXY_CONTROLLER_PORT", 8080)),
 		MaxSandboxesPerCtrl:    envInt("BOXY_MAX_SANDBOXES_PER_CONTROLLER", 20),
 		MaxControllerReplicas:  int32(envInt("BOXY_MAX_CONTROLLER_REPLICAS", 50)),
@@ -64,10 +67,17 @@ func main() {
 		TerminatedRetentionSec: envInt("BOXY_TERMINATED_RETENTION_SECONDS", 3600),
 		ScaleDownCooldown:      time.Duration(envInt("BOXY_SCALE_DOWN_COOLDOWN_SECONDS", 300)) * time.Second,
 		MTLSDisabled:           envBool("BOXY_MTLS_DISABLED", false),
-	})
+	}
 
+	reconciler := operator.NewSandboxReconciler(mgr.GetClient(), cc, cfg)
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		slog.Error("unable to create sandbox controller", "err", err)
+		os.Exit(1)
+	}
+
+	poolReconciler := operator.NewControllerPoolReconciler(mgr.GetClient(), cfg)
+	if err := poolReconciler.SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create controllerpool controller", "err", err)
 		os.Exit(1)
 	}
 

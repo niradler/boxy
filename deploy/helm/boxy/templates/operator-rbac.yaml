@@ -11,6 +11,13 @@ rules:
   - apiGroups: ["boxy.dev"]
     resources: ["sandboxes/status"]
     verbs: ["get", "update", "patch"]
+  # ControllerPool CRD
+  - apiGroups: ["boxy.dev"]
+    resources: ["controllerpools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["boxy.dev"]
+    resources: ["controllerpools/status"]
+    verbs: ["get", "update", "patch"]
   # Controller StatefulSet scaling
   - apiGroups: ["apps"]
     resources: ["statefulsets"]

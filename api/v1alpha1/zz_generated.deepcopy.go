@@ -141,6 +141,101 @@ func (in *SandboxStatus) DeepCopy() *SandboxStatus {
 	return out
 }
 
+func (in *ControllerPool) DeepCopyInto(out *ControllerPool) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *ControllerPool) DeepCopy() *ControllerPool {
+	if in == nil {
+		return nil
+	}
+	out := new(ControllerPool)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ControllerPool) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *ControllerPoolList) DeepCopyInto(out *ControllerPoolList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]ControllerPool, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *ControllerPoolList) DeepCopy() *ControllerPoolList {
+	if in == nil {
+		return nil
+	}
+	out := new(ControllerPoolList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ControllerPoolList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *ControllerPoolSpec) DeepCopyInto(out *ControllerPoolSpec) {
+	*out = *in
+	if in.PreinstalledBinaries != nil {
+		in, out := &in.PreinstalledBinaries, &out.PreinstalledBinaries
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+}
+
+func (in *ControllerPoolSpec) DeepCopy() *ControllerPoolSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(ControllerPoolSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *ControllerPoolStatus) DeepCopyInto(out *ControllerPoolStatus) {
+	*out = *in
+	if in.LastScaleTime != nil {
+		in, out := &in.LastScaleTime, &out.LastScaleTime
+		*out = (*in).DeepCopy()
+	}
+	if in.Conditions != nil {
+		in, out := &in.Conditions, &out.Conditions
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *ControllerPoolStatus) DeepCopy() *ControllerPoolStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(ControllerPoolStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
 func deepCopyVMConfig(in, out *api.VMConfig) {
 	*out = *in
 	if in.Rlimits != nil {

@@ -59,6 +59,7 @@ type SandboxSpec struct {
 
 type SandboxStatus struct {
 	Phase             SandboxPhase `json:"phase,omitempty"`
+	ControllerPool    string       `json:"controllerPool,omitempty"`
 	ControllerPod     string       `json:"controllerPod,omitempty"`
 	ControllerAddress string       `json:"controllerAddress,omitempty"`
 	Port              int32        `json:"port,omitempty"`
