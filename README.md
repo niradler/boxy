@@ -13,7 +13,7 @@ Each sandbox is an **nsjail** process jail: isolated filesystem, network namespa
 | Component | Language | Role |
 |---|---|---|
 | **boxy-router** | Go | Stateless HTTP frontend — auth, API, MCP server, sandbox CR management |
-| **boxy-operator** | Go | Kubernetes controller — bin-packing, StatefulSet auto-scaling, TTL expiry |
+| **boxy-operator** | Go | Kubernetes controller — bin-packing, StatefulSet auto-scaling, TTL expiry, ControllerPool status |
 | **boxy-controller** | Go | Per-node nsjail daemon — runs actual sandboxes, exposes mTLS HTTP API |
 
 ```
@@ -112,7 +112,7 @@ Create a sandbox. Returns `201` when the sandbox is `Running`.
 |---|---|---|
 | `ttlSeconds` | int | Sandbox TTL (sliding window, refreshed on each exec). `0` = no expiry. |
 | `env` | map | Environment variables explicitly passed to the sandbox. `KUBERNETES_*` and `BOXY_*` prefixes are blocked. Max 64 keys. Sandboxes receive only these keys plus `PATH` and `HOME=/workspace` — no host environment leaks through. |
-| `allowedBinaries` | string[] | Binaries (e.g. `"curl"`, `"python3"`) bind-mounted read-only from the controller image. |
+| `allowedBinaries` | string[] | Binaries (e.g. `"curl"`, `"python3"`) bind-mounted read-only from `BOXY_NSJAIL_BINARIES_DIR` (`/usr/local/bin`) on the controller into the sandbox. Only listed binaries are accessible; an empty list mounts nothing. Binaries must exist on the controller image — use `Dockerfile.controller.dev` (or extend it) to pre-bake tools. See [docs/architecture.md §4.3](docs/architecture.md) for how to extend the dev image. |
 | `vm` | object | Resource and identity config — see below. |
 | `network` | object | Network policy — see below. |
 | `volumes` | array | Extra mounts inside the sandbox. |
@@ -254,6 +254,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | `BOXY_CONTROLLER_STATEFULSET_NAME` | — | Name of the controller StatefulSet. |
 | `BOXY_CONTROLLER_HEADLESS_SERVICE` | — | Headless service for pod DNS. |
 | `BOXY_CONTROLLER_PORT` | `8080` | |
+| `BOXY_CONTROLLER_POOL_NAME` | `<statefulset-name>` | Name of the ControllerPool CR to keep in sync. Defaults to the StatefulSet name. |
 | `BOXY_MAX_SANDBOXES_PER_CONTROLLER` | `20` | Sandboxes per controller pod (bin-packing cap). |
 | `BOXY_MAX_CONTROLLER_REPLICAS` | `50` | StatefulSet scale-out ceiling. |
 | `BOXY_MIN_CONTROLLER_REPLICAS` | `1` | StatefulSet scale-in floor. |
@@ -276,7 +277,6 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | `BOXY_NSJAIL_BINARIES_DIR` | `/usr/local/bin` | Host directory for `allowedBinaries`. |
 | `BOXY_MAX_EXEC_CONCURRENCY` | `50` | Max parallel exec calls handled concurrently per controller pod. Returns HTTP 429 when full. |
 | `BOXY_MAX_OUTPUT_BYTES` | `6291456` | Max combined stdout/stderr per exec (6 MB). Output over this limit is truncated with a `\n[output truncated]` suffix. |
-| `BOXY_PREINSTALL_PACKAGES` | — | Comma-separated apt packages to install into the Ubuntu rootfs at pod startup. Installed once via chroot on start. Example: `python3,nodejs,curl,jq`. Requires `CAP_SYS_ADMIN`. |
 
 ## Development
 
@@ -298,15 +298,18 @@ Requires Go ≥ 1.26.
 Build and load images into a kind cluster, then run the test suites against a live deployment:
 
 ```bash
-# Build and load into kind
+# Build and load into kind (production image)
 make kind-load
+
+# Build and load dev controller image (includes jq, yq, curl, git, python3, node in rootfs)
+make kind-load-dev
 
 # Go e2e suite
 BOXY_E2E_BASE_URL=http://127.0.0.1:18080 \
 BOXY_E2E_ROUTER_TOKEN=<token> \
 make e2e-go
 
-# Shell e2e suite (182 checks across infra, security, config, api, isolation, operator)
+# Shell e2e suite (infra, security, config, api, isolation, operator, network, controllerpool, allowed-binaries)
 BASE_URL=http://127.0.0.1:18080 ROUTER_TOKEN=<token> NAMESPACE=boxy \
 make e2e-scripts
 ```
@@ -321,7 +324,6 @@ cmd/boxy-operator/       Operator entry point (Go)
 cmd/boxy-controller/     Controller entry point (Go)
   main.go                Config, mTLS server setup, graceful shutdown
   server.go              HTTP handlers for /v1/sandboxes, /v1/exec, /healthz
-  entrypoint.sh          Container entrypoint; installs apt packages (BOXY_PREINSTALL_PACKAGES) into rootfs before starting controller
 local/
   gen-mtls-certs.sh      Generate CA + server + client mTLS certs for production deployment
   setup-mcp-dev.sh       Wire Claude Code (MCP) to a local boxy deployment
@@ -340,7 +342,8 @@ test/e2e/                Go and shell end-to-end test suites
 docs/
   architecture.md        Full system design and architecture reference
 Dockerfile.router
-Dockerfile.controller    Multi-stage: nsjail build + Ubuntu 24.04 rootfs + Go binary
+Dockerfile.controller      Multi-stage: nsjail build + Ubuntu 24.04 rootfs + Go binary
+Dockerfile.controller.dev  Same as above but with jq, yq, curl, git, python3, node baked into rootfs and /usr/local/bin
 Dockerfile.operator
 ```
 

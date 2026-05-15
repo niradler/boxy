@@ -38,10 +38,6 @@ spec:
               value: {{ .Values.controller.maxExecConcurrency | default 50 | quote }}
             - name: BOXY_MAX_OUTPUT_BYTES
               value: {{ .Values.controller.maxOutputBytes | default 6291456 | quote }}
-            {{- if .Values.controller.preinstallPackages }}
-            - name: BOXY_PREINSTALL_PACKAGES
-              value: {{ .Values.controller.preinstallPackages | quote }}
-            {{- end }}
             - name: BOXY_MTLS_DISABLED
               value: {{ .Values.mtls.disabled | quote }}
             - name: BOXY_TLS_CERT_PATH

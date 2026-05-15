@@ -115,7 +115,12 @@ Output size enforcement is at the **controller**, not the router — see §4.3.
 
 **Deployment:** Kubernetes Deployment with leader election (1 active replica at a time).
 
-The operator is a standard controller-runtime reconciler watching Sandbox CRs. It drives a state machine:
+The operator runs two reconcilers:
+
+1. **SandboxReconciler** — watches Sandbox CRs and drives the sandbox lifecycle state machine.
+2. **ControllerPoolReconciler** — watches `ControllerPool` CRs and Sandbox events; keeps `ControllerPool.status` (readyReplicas, activeSandboxCount, Ready condition) in sync with the StatefulSet and live sandbox count.
+
+The sandbox state machine:
 
 ```
               Create CR         Assign pod        Create on ctrl
@@ -179,7 +184,84 @@ Internally, each sandbox is a directory at `/var/lib/boxy/sandboxes/{id}/workspa
 
 **Output truncation:** `BOXY_MAX_OUTPUT_BYTES` (default 6 MB) caps the combined size of stdout and stderr returned per exec. Output over this threshold is truncated with a `\n[output truncated]` suffix. The response still returns `200 OK` — the truncation is a data cap, not an error condition.
 
-**Package pre-installation:** `BOXY_PREINSTALL_PACKAGES` (comma-separated) installs apt packages into the Ubuntu rootfs via chroot at pod startup before the controller process starts. This makes those packages available to all sandboxes on the pod as part of the base rootfs. Combined with `allowedBinaries` (per-sandbox bind-mount allowlist), this provides two-level binary control: which packages exist on the pod, and which binaries each sandbox can access.
+**Pre-installed binaries (dev image):** `Dockerfile.controller.dev` places static dev binaries (`jq`, `yq`) at the controller's `/usr/local/bin`. These become available to sandboxes **only when explicitly listed in `allowedBinaries`** — a per-sandbox bind-mount of that file into `/usr/local/bin` inside the sandbox. The Ubuntu 24.04 sandbox rootfs is intentionally bare: no dev tools are installed there via `apt-get`, so sandboxes without an `allowedBinaries` entry start with a clean, minimal Ubuntu environment. Build with `make docker-build-dev` / load with `make kind-load-dev` (tag: `boxydev/boxy-controller-dev:e2e`).
+
+**Security separation:** The production controller image (`Dockerfile.controller`) has no dev tools at `/usr/local/bin`. Listing a binary name in `allowedBinaries` for a sandbox on the production image has no effect — there is no bind-mount source, so the binary simply does not appear inside the sandbox. The dev image adds bind-mount sources; it does not weaken the per-sandbox whitelist.
+
+#### How to extend the dev image with additional binaries
+
+Every supported binary must satisfy the **two-path rule**:
+
+1. **Controller-side:** the binary must exist at `/usr/local/bin/<name>` on the controller container — this is the bind-mount source.
+2. **Executable inside the sandbox:** the binary must run correctly in the Ubuntu 24.04 rootfs. Statically linked binaries satisfy this automatically; dynamic binaries also require their shared libraries to be present in the rootfs.
+
+**Static binary (recommended — no rootfs changes needed):**
+
+Download a statically linked release binary and copy it into the final stage:
+
+```dockerfile
+# In Dockerfile.controller.dev, tools-builder stage:
+RUN curl -fsSL -o /mytool \
+        "https://example.com/mytool-linux-amd64-static" \
+    && chmod +x /mytool
+
+# In the final runtime stage:
+COPY --from=tools-builder /mytool /usr/local/bin/mytool
+```
+
+No changes to the Ubuntu rootfs stage are needed because a static binary carries all its dependencies.
+
+**Dynamic binary (requires rootfs library support):**
+
+Dynamic binaries link against shared libraries (glibc, libssl, etc.) that must be present in the sandbox's Ubuntu 24.04 rootfs. Because the rootfs is intentionally bare, you must install the library dependencies (not the executable itself) there. Installing the full package and then removing the executable keeps the whitelist intact:
+
+```dockerfile
+# In Dockerfile.controller.dev, ubuntu-tools stage (Ubuntu 24.04):
+FROM ubuntu:24.04 AS ubuntu-tools
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# In the rootfs stage — install libs, then remove the executable:
+FROM ubuntu:24.04 AS rootfs
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/bin/curl   # remove executable; leave shared libs
+
+# In the final runtime stage:
+COPY --from=ubuntu-tools /usr/bin/curl /usr/local/bin/curl
+```
+
+`which curl` inside the sandbox returns nothing unless `curl` is in `allowedBinaries`. When it is, the bind-mounted binary finds its shared libs (libcurl, libssl, etc.) in the rootfs and executes normally.
+
+**Deploying the extended image:**
+```bash
+# Build and push to a registry
+docker build -f Dockerfile.controller.dev -t my-registry/boxy-controller-dev:v1 .
+docker push my-registry/boxy-controller-dev:v1
+
+# Update the Helm release to use the dev image for the controller
+helm upgrade boxy ./deploy/helm/boxy -n boxy --reuse-values \
+  --set controller.image.repository=my-registry/boxy-controller-dev \
+  --set controller.image.tag=v1
+
+# Or for kind local dev:
+make kind-load-dev   # builds boxydev/boxy-controller-dev:e2e and loads into kind
+helm upgrade boxy ./deploy/helm/boxy -n boxy --reuse-values \
+  --set controller.image.repository=boxydev/boxy-controller-dev \
+  --set controller.image.tag=e2e \
+  --set global.imagePullPolicy=Never
+```
+
+**Using the binaries in a sandbox:**
+```json
+{
+  "sandboxId": "my-sandbox",
+  "sessionId": "demo",
+  "owner": "me",
+  "allowedBinaries": ["jq", "python3"]
+}
+```
+`allowedBinaries` is a per-sandbox whitelist — only the listed names are bind-mounted into that sandbox. A binary present on the controller but absent from `allowedBinaries` is not accessible inside the sandbox. An empty list means no extra binaries are mounted.
 
 **Env var isolation:** Sandboxes receive only explicitly configured environment variables. The controller injects exactly two baseline keys — `PATH` (standard search path) and `HOME=/workspace` (needed by tools like npm, pip, and git that expect a writable HOME) — then appends sandbox-level env, then per-exec env overrides. No host environment variables leak into sandboxes.
 
@@ -217,7 +299,8 @@ SandboxSpec
 
 SandboxStatus
   phase             Pending | Creating | Running | Deleting | Terminated
-  controllerPod     string             Assigned StatefulSet pod name
+  controllerPool    string             ControllerPool CR name this sandbox is assigned to
+  controllerPod     string             Specific StatefulSet pod name (for debugging)
   controllerAddress string             Pod DNS name for mTLS dialing
   port              int32              Controller port
   createdAt         timestamp
@@ -225,6 +308,27 @@ SandboxStatus
   terminatedAt      timestamp
   lastExecAt        timestamp
   message           string             Error / status detail
+```
+
+### ControllerPool CR (Kubernetes Custom Resource)
+
+Represents the fleet of controller pods (one ControllerPool per StatefulSet deployment). Created by Helm; status maintained by the operator's ControllerPoolReconciler.
+
+```
+ControllerPoolSpec
+  maxSandboxes          int        Per-pod sandbox cap (mirrors BOXY_MAX_SANDBOXES_PER_CONTROLLER)
+  maxReplicas           int32      StatefulSet scale-out ceiling
+  minReplicas           int32      StatefulSet scale-in floor
+  image                 string     Controller image in use (informational)
+  preinstalledBinaries  []string   Binaries available for allowedBinaries (informational)
+
+ControllerPoolStatus
+  readyReplicas         int32      From StatefulSet.status.readyReplicas; reconciled on Sandbox events
+  activeSandboxCount    int32      Count of Pending+Creating+Running sandboxes in the namespace
+  lastScaleTime         timestamp  Set when the StatefulSet replica count changes (future)
+  conditions
+    Ready: True  when readyReplicas >= spec.minReplicas
+    Ready: False when readyReplicas < spec.minReplicas
 ```
 
 ---
@@ -591,6 +695,19 @@ The script generates a 4096-bit CA, a 2048-bit server cert (SAN includes the hea
 | Idle pods staying up too long          | Decrease `BOXY_SCALE_DOWN_COOLDOWN_SECONDS`           |
 | Disk filling up on controller nodes    | Lower `ttlSeconds`; check for zombie `Terminated` CRs; workspace dirs are emptyDir-scoped so they vanish with the pod |
 | High exec latency                      | Scale out router replicas; check controller pod CPU   |
+
+### Inspect ControllerPool
+
+```bash
+# Live status: ready replicas and active sandbox count
+kubectl get controllerpool -n boxy
+
+# Full status including Ready condition
+kubectl get controllerpool boxy-ctrl -n boxy -o yaml | grep -A20 'status:'
+
+# Sandboxes and which pool they reference
+kubectl get sandbox -n boxy -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,POOL:.status.controllerPool,POD:.status.controllerPod'
+```
 
 ### Debug a Stuck Sandbox
 

@@ -63,11 +63,14 @@ run_suite "security" "${SCRIPT_DIR}/validate-security.sh"
 run_suite "config"   "${SCRIPT_DIR}/validate-config.sh"
 
 if [[ -n "${BASE_URL:-}" && -n "${ROUTER_TOKEN:-}" ]]; then
-  run_suite "api"       "${SCRIPT_DIR}/validate-api.sh"
-  run_suite "isolation" "${SCRIPT_DIR}/validate-isolation.sh"
-  run_suite "operator"  "${SCRIPT_DIR}/validate-operator.sh"
+  run_suite "api"              "${SCRIPT_DIR}/validate-api.sh"
+  run_suite "isolation"        "${SCRIPT_DIR}/validate-isolation.sh"
+  run_suite "operator"         "${SCRIPT_DIR}/validate-operator.sh"
+  run_suite "network-internet" "${SCRIPT_DIR}/validate-network-internet.sh"
+  run_suite "controllerpool"   "${SCRIPT_DIR}/validate-controllerpool.sh"
+  run_suite "allowed-binaries-dev" "${SCRIPT_DIR}/validate-allowed-binaries-dev.sh"
 else
-  echo -e "\n${_CYAN}>>> Skipping api, isolation, and operator suites (BASE_URL/ROUTER_TOKEN not set)${_RESET}"
+  echo -e "\n${_CYAN}>>> Skipping api/isolation/operator/network/controllerpool/binaries suites (BASE_URL/ROUTER_TOKEN not set)${_RESET}"
 fi
 
 echo ""
