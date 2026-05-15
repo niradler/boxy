@@ -160,7 +160,7 @@ assert_eq "SB_CROSS (allowedBinaries=[yq]) does not see SB_JQ's jq bind-mount" "
 
 cross_yq=$(curl_api POST "/v1/exec" \
   -d "{\"sessionId\":\"binaries\",\"sandboxId\":\"${SB_CROSS}\",\"command\":\"sh\",
-       \"args\":[\"-c\",\"which yq 2>/dev/null && echo present || echo absent\"],
+       \"args\":[\"-c\",\"test -f /usr/local/bin/yq && echo present || echo absent\"],
        \"timeoutSeconds\":10}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
 assert_eq "SB_CROSS can see its own yq bind-mount" "present" "${cross_yq}"
