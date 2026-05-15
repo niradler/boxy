@@ -1,0 +1,10 @@
+apiVersion: boxy.dev/v1alpha1
+kind: ControllerPool
+metadata:
+  name: {{ include "boxy.fullname" . }}-ctrl
+  namespace: {{ include "boxy.sandboxNamespace" . }}
+spec:
+  maxSandboxes: {{ .Values.controller.maxSandboxes }}
+  maxReplicas: {{ .Values.operator.maxControllerReplicas }}
+  minReplicas: {{ .Values.operator.minControllerReplicas }}
+  image: {{ include "boxy.image" (dict "root" . "image" .Values.controller.image) }}

@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1.7
+# Dev controller image — identical to production except that static dev tools
+# (jq, yq) are placed at the controller's /usr/local/bin and become available
+# to sandboxes ONLY via explicit allowedBinaries whitelisting.
+#
+# Security model
+# ==============
+# The Ubuntu 24.04 sandbox rootfs is intentionally bare — no dev tools are
+# installed there. Extra tools reach a sandbox only when listed in
+# spec.allowedBinaries, which causes a per-sandbox bind-mount of that binary
+# from /usr/local/bin on the controller into /usr/local/bin in the sandbox.
+#
+# Two-path rule for each supported binary
+# ----------------------------------------
+# 1. /usr/local/bin/<name> on the controller  → bind-mount source
+# 2. statically linked                        → no shared-lib deps in the rootfs
+#
+# Adding a new tool: download/build a statically linked binary, copy it to
+# /usr/local/bin in the final stage, and add its name to the
+# preinstalledBinaries field in the ControllerPool CR (informational only).
+# Dynamic binaries require additional work: see docs/architecture.md §4.3.
+#
+# Build: make docker-build-dev
+# Load:  make kind-load-dev
+
+# ── Stage 1: Go controller binary ────────────────────────────────────────────
+FROM golang:1.26-bookworm AS go-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /boxy-controller ./cmd/boxy-controller
+
+# ── Stage 2: nsjail ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS nsjail-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates git bison flex \
+        libprotobuf-dev libnl-route-3-dev protobuf-compiler \
+        g++ make pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth=1 https://github.com/google/nsjail.git /nsjail && \
+    cd /nsjail && make -j"$(nproc)"
+
+# ── Stage 3: Static dev tool binaries ────────────────────────────────────────
+# Only statically linked binaries here — they execute inside the bare Ubuntu
+# 24.04 rootfs without needing any shared libraries to be pre-installed.
+FROM debian:bookworm-slim AS tools-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+# jq 1.7.1 — musl-static build, no glibc dependency
+RUN curl -fsSL -o /jq \
+        "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64" \
+    && chmod +x /jq
+# yq v4.44.6 — Go binary, statically compiled
+RUN curl -fsSL -o /yq \
+        "https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64" \
+    && chmod +x /yq
+
+# ── Stage 4: Bare Ubuntu 24.04 sandbox rootfs ────────────────────────────────
+# INTENTIONALLY has no dev tools installed. Sandboxes start from a minimal
+# Ubuntu environment; extra tools are accessible only via allowedBinaries.
+FROM ubuntu:24.04 AS rootfs
+
+# ── Stage 5: Runtime ─────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libprotobuf32 \
+        libnl-route-3-200 \
+        util-linux \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail
+
+# Bare Ubuntu 24.04 rootfs — no dev tool executables in any PATH inside the sandbox.
+COPY --from=rootfs / /rootfs/ubuntu-24.04
+
+# Dev tool bind-mount sources (controller-side only, never visible without allowedBinaries):
+COPY --from=tools-builder /jq  /usr/local/bin/jq
+COPY --from=tools-builder /yq  /usr/local/bin/yq
+
+COPY --from=go-builder /boxy-controller /usr/local/bin/boxy-controller
+
+ENV BOXY_NSJAIL_PATH=/usr/sbin/nsjail \
+    BOXY_NSJAIL_ROOTFS=/rootfs/ubuntu-24.04 \
+    BOXY_NSJAIL_SANDBOX_ROOT=/var/lib/boxy/sandboxes \
+    BOXY_NSJAIL_BINARIES_DIR=/usr/local/bin
+
+RUN mkdir -p /var/lib/boxy/sandboxes
+USER root
+
+ENTRYPOINT ["/usr/local/bin/boxy-controller"]

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: boxy
+description: Kubernetes-native sandbox worker manager
+type: application
+version: 0.0.3
+appVersion: "0.0.3"

@@ -1,0 +1,43 @@
+{{- if .Values.controller.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: boxy-sandbox-default-deny
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      boxy.dev/managed-by: boxy
+      boxy.dev/controller: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only allow connections from the router and operator — no other pod in the
+    # namespace may reach the controller API directly, bypassing router auth.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: boxy-router
+        - podSelector:
+            matchLabels:
+              app: boxy-operator
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow controller-to-router communication
+    - to:
+        - podSelector:
+            matchLabels:
+              app: boxy-router
+    {{- if .Values.controller.networkPolicy.allowInternetEgress }}
+    # Unrestricted egress — required when sandboxes use allowInternetAccess: true.
+    # The sandbox inherits the controller pod's network namespace, so internet
+    # reachability is gated here at the pod level.
+    - {}
+    {{- end }}
+{{- end }}

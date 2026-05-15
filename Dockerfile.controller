@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.7
+# NOTE: nsjail uses glibc-specific types (rlimit64, RLIM64_INFINITY) that
+# musl (Alpine) does not support. The runtime base is Debian slim (glibc).
+# The Go binary is compiled with CGO_ENABLED=0 for a fully static executable.
+
+# Stage 1: Build the Go controller binary.
+FROM golang:1.26-bookworm AS go-builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /boxy-controller ./cmd/boxy-controller
+
+# Stage 2: Build nsjail from source (requires glibc headers).
+FROM debian:bookworm-slim AS nsjail-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates git bison flex \
+        libprotobuf-dev libnl-route-3-dev protobuf-compiler \
+        g++ make pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+# Pin to a specific nsjail commit for reproducible, auditable builds.
+# To update: git ls-remote https://github.com/google/nsjail.git HEAD
+RUN git clone https://github.com/google/nsjail.git /nsjail && \
+    cd /nsjail && git checkout 66ad78dc361721512fbf9470488e584364c75489 && \
+    make -j"$(nproc)"
+
+# Stage 3: Extract Ubuntu 24.04 as the pre-baked sandbox rootfs.
+FROM ubuntu:24.04 AS rootfs
+
+# Stage 4: Runtime — Debian slim (glibc, needed by nsjail).
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libprotobuf32 \
+        libnl-route-3-200 \
+        util-linux \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail
+
+# Pre-baked Ubuntu 24.04 rootfs for sandboxes (overlayfs lower dir).
+COPY --from=rootfs / /rootfs/ubuntu-24.04
+
+# Static Go binary — no glibc dependency.
+COPY --from=go-builder /boxy-controller /usr/local/bin/boxy-controller
+
+ENV BOXY_NSJAIL_PATH=/usr/sbin/nsjail \
+    BOXY_NSJAIL_ROOTFS=/rootfs/ubuntu-24.04 \
+    BOXY_NSJAIL_SANDBOX_ROOT=/var/lib/boxy/sandboxes \
+    BOXY_NSJAIL_BINARIES_DIR=/usr/local/bin
+
+RUN mkdir -p /var/lib/boxy/sandboxes
+
+# Requires CAP_SYS_ADMIN (bind mounts, overlayfs). Set in pod securityContext:
+#   capabilities:
+#     add: [SYS_ADMIN, SETUID, SETGID, NET_ADMIN, SYS_CHROOT, MKNOD, SETPCAP]
+USER root
+
+ENTRYPOINT ["/usr/local/bin/boxy-controller"]

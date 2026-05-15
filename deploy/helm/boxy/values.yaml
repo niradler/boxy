@@ -1,0 +1,135 @@
+global:
+  # Prepended to all image repositories. Use to redirect all images to a private mirror.
+  # e.g., "my-registry.example.com" → "my-registry.example.com/niradler/boxy-router:tag"
+  # Leave empty to use repository values as-is.
+  imageRegistry: ""
+  imagePullPolicy: IfNotPresent
+  # List of pull secrets applied to every pod. e.g., [{name: "my-registry-creds"}]
+  imagePullSecrets: []
+  sandboxNamespace: ""
+
+# --- Router ---
+router:
+  image:
+    repository: niradler/boxy-router
+    # Overrides Chart.AppVersion when set.
+    tag: ""
+    # If set, takes precedence over tag. e.g., "sha256:abc123..."
+    digest: ""
+
+  replicas: 1
+  servicePort: 8080
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    # targetMemoryUtilizationPercentage: 80
+
+  auth:
+    # staticToken: optional bypass token for local dev / e2e.
+    # Leave empty (default) to require callers to present a valid K8s SA token.
+    # If set, both the SA token path AND this static token are accepted.
+    staticToken: ""
+    # Seconds to cache a validated K8s SA token before re-calling TokenReview.
+    cacheTTLSeconds: 30
+
+  # Request / response limits.
+  maxBodyBytes: 6291456        # 6 MiB — max size of an inbound request body
+  maxTimeoutSeconds: 3600      # max exec timeoutSeconds a caller may request
+  maxSandboxTTLSeconds: 86400  # max ttlSeconds allowed when creating a sandbox
+  maxArgs: 256                 # max number of args in an exec request
+  maxEnvKeys: 64               # max number of env keys in an exec request
+  maxConcurrency: 100          # max parallel in-flight exec/MCP requests
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  serviceAccount: boxy-router
+
+  # Default sandbox for MCP clients that don't specify X-Sandbox-Id.
+  defaultSandbox:
+    enabled: false
+    sandboxId: "default"
+    owner: "system"
+    ttlSeconds: 86400
+    env: {}
+    allowedBinaries: []
+    vm:
+      memoryMb: 0
+      vcpus: 1
+      workdir: "/workspace"
+      shell: "/bin/bash"
+      idleTimeoutSec: 0
+    network:
+      allowInternetAccess: false
+    volumes: []
+
+# --- Controller (nsjail StatefulSet) ---
+# The controller pod requires CAP_SYS_ADMIN for overlayfs per-sandbox filesystem.
+controller:
+  # token overrides the auto-generated controller token stored in the boxy-tokens secret.
+  # Leave empty to have Helm generate and persist a random 32-char token automatically.
+  # The token is injected as BOXY_CONTROLLER_TOKEN and enforced on all non-healthz endpoints.
+  token: ""
+  image:
+    repository: niradler/boxy-controller
+    tag: ""
+    digest: ""
+
+  port: 8080
+  replicas: 1
+  maxSandboxes: 20
+  maxExecConcurrency: 50   # max parallel exec calls a single controller pod handles
+  maxOutputBytes: 6291456  # 6 MiB — truncate stdout/stderr above this size
+  serviceAccount: boxy-controller
+  logLevel: "warn" # off | error | warn | info | debug | trace
+
+  nsjail:
+    path: "/usr/sbin/nsjail"
+    rootfs: "/rootfs/ubuntu-24.04"
+    binariesDir: "/usr/local/bin"
+
+  # K8s NetworkPolicy applied to controller pods (default-deny egress).
+  # Per-sandbox network isolation is enforced by nsjail network namespaces.
+  networkPolicy:
+    enabled: true
+    # Allow unrestricted egress from controller pods. Required when sandboxes
+    # use allowInternetAccess: true — those sandboxes inherit the controller pod's
+    # network namespace, so internet reachability is enforced at this level.
+    # Default false (production-safe). Set true only when internet-enabled sandboxes
+    # are explicitly intended.
+    allowInternetEgress: false
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+# --- Operator ---
+operator:
+  image:
+    repository: niradler/boxy-operator
+    tag: ""
+    digest: ""
+
+  serviceAccount: boxy-operator
+  terminatedRetentionSeconds: 3600
+  maxControllerReplicas: 50
+  minControllerReplicas: 1
+
+# --- mTLS (router/operator ↔ controller) ---
+mtls:
+  disabled: false
+  caCN: "boxy-ca"
+  serverCN: "boxy-controller"
+  clientCN: "boxy-router"

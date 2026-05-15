@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "boxy.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: boxy-operator
+  template:
+    metadata:
+      labels:
+        app: boxy-operator
+    spec:
+      serviceAccountName: {{ .Values.operator.serviceAccount }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: {{ include "boxy.image" (dict "root" . "image" .Values.operator.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: BOXY_NAMESPACE
+              value: {{ include "boxy.sandboxNamespace" . | quote }}
+            - name: BOXY_CONTROLLER_STATEFULSET_NAME
+              value: {{ include "boxy.fullname" . }}-ctrl
+            - name: BOXY_CONTROLLER_HEADLESS_SERVICE
+              value: {{ include "boxy.fullname" . }}-ctrl-headless
+            - name: BOXY_CONTROLLER_PORT
+              value: {{ .Values.controller.port | quote }}
+            - name: BOXY_MAX_SANDBOXES_PER_CONTROLLER
+              value: {{ .Values.controller.maxSandboxes | quote }}
+            - name: BOXY_MAX_CONTROLLER_REPLICAS
+              value: {{ .Values.operator.maxControllerReplicas | quote }}
+            - name: BOXY_MIN_CONTROLLER_REPLICAS
+              value: {{ .Values.operator.minControllerReplicas | quote }}
+            - name: BOXY_TERMINATED_RETENTION_SECONDS
+              value: {{ .Values.operator.terminatedRetentionSeconds | quote }}
+            - name: BOXY_MTLS_DISABLED
+              value: {{ .Values.mtls.disabled | quote }}
+            - name: BOXY_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: controller-token
+            - name: BOXY_TLS_CA_PATH
+              value: "/tls/ca.crt"
+            - name: BOXY_TLS_CLIENT_CERT_PATH
+              value: "/tls/tls.crt"
+            - name: BOXY_TLS_CLIENT_KEY_PATH
+              value: "/tls/tls.key"
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if not .Values.mtls.disabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.mtls.disabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "boxy.fullname" . }}-mtls-router
+        {{- end }}
+      {{- include "boxy.imagePullSecrets" . | nindent 6 }}

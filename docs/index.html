@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>boxy — Kubernetes-native sandbox runtime</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <style>
+    pre code.hljs { border-radius: 0.5rem; font-size: 0.8rem; }
+    .comp-router  { border-color: #3B82F6; background: #EFF6FF; }
+    .comp-op      { border-color: #8B5CF6; background: #F5F3FF; }
+    .comp-ctrl    { border-color: #10B981; background: #ECFDF5; }
+    .comp-sandbox { border-color: #F59E0B; background: #FFFBEB; }
+    .comp-client  { border-color: #6B7280; background: #F9FAFB; }
+    .badge { display:inline-flex; align-items:center; justify-content:center;
+      width:1.3rem; height:1.3rem; border-radius:50%; background:#3B82F6;
+      color:#fff; font-size:0.65rem; font-weight:700; margin-right:0.35rem;
+      flex-shrink:0; }
+    .badge-op { background:#8B5CF6; }
+    .flow-col { display:flex; flex-direction:column; align-items:center; gap:0; }
+    .flow-step { background:#fff; border:1px solid #e5e7eb; border-radius:0.5rem;
+      padding:0.6rem 0.9rem; font-size:0.8rem; color:#374151; width:100%; }
+    .flow-arrow { color:#9CA3AF; line-height:1; padding:0.1rem 0; font-size:1.1rem; }
+    .tab-btn.active { background:#1f2937; color:#fff; }
+    html { font-family: ui-sans-serif, system-ui, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<!-- ── NAV ─────────────────────────────────────────────────── -->
+<nav class="sticky top-0 z-50 bg-white/95 backdrop-blur border-b border-gray-200 shadow-sm">
+  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="#" class="font-mono font-bold text-lg tracking-tight">📦 boxy</a>
+    <div class="hidden md:flex items-center gap-5 text-sm text-gray-600">
+      <a href="#architecture" class="hover:text-blue-600 transition-colors">Architecture</a>
+      <a href="#quickstart"   class="hover:text-blue-600 transition-colors">Quick Start</a>
+      <a href="#api"          class="hover:text-blue-600 transition-colors">API</a>
+      <a href="#mcp"          class="hover:text-blue-600 transition-colors">MCP</a>
+      <a href="#config"       class="hover:text-blue-600 transition-colors">Config</a>
+      <a href="#security"     class="hover:text-blue-600 transition-colors">Security</a>
+      <a href="https://github.com/niradler/boxy" target="_blank"
+         class="bg-gray-900 text-white px-3 py-1.5 rounded-md hover:bg-gray-700 transition-colors text-xs font-medium">
+        GitHub →
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ── HERO ────────────────────────────────────────────────── -->
+<section class="bg-gray-900 text-white pt-20 pb-16 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="max-w-3xl">
+      <div class="inline-block bg-yellow-400/20 text-yellow-300 text-xs font-mono px-3 py-1 rounded-full mb-6 border border-yellow-400/20">
+        ⚠ Early release — single-tenant only
+      </div>
+      <h1 class="text-5xl font-bold mb-3 tracking-tight">
+        <span class="text-blue-400">boxy</span>
+      </h1>
+      <p class="text-xl text-gray-300 mb-4 font-medium">Kubernetes-native sandbox runtime</p>
+      <p class="text-gray-400 mb-8 text-base leading-relaxed max-w-2xl">
+        Run isolated shell commands inside ephemeral Linux environments via a clean HTTP API or MCP — no VMs, no hypervisors, no hardware dependencies. Each sandbox is an <strong class="text-gray-200">nsjail</strong> process jail backed by a shared read-only Ubuntu 24.04 rootfs.
+      </p>
+      <div class="flex flex-wrap gap-2 mb-10">
+        <span class="bg-blue-600/30 text-blue-300 px-3 py-1 rounded-md text-xs font-mono border border-blue-500/20">Go 1.26+</span>
+        <span class="bg-green-600/30 text-green-300 px-3 py-1 rounded-md text-xs font-mono border border-green-500/20">nsjail isolation</span>
+        <span class="bg-purple-600/30 text-purple-300 px-3 py-1 rounded-md text-xs font-mono border border-purple-500/20">MCP / AI-native</span>
+        <span class="bg-orange-600/30 text-orange-300 px-3 py-1 rounded-md text-xs font-mono border border-orange-500/20">Helm OCI chart</span>
+        <span class="bg-gray-600/30 text-gray-300 px-3 py-1 rounded-md text-xs font-mono border border-gray-500/20">MIT</span>
+      </div>
+      <div class="bg-gray-800 border border-gray-700 rounded-xl p-5 font-mono text-sm">
+        <div class="text-gray-500 text-xs mb-3 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-red-500 inline-block"></span>
+          <span class="w-3 h-3 rounded-full bg-yellow-500 inline-block"></span>
+          <span class="w-3 h-3 rounded-full bg-green-500 inline-block"></span>
+          <span class="ml-2">Install with Helm (OCI)</span>
+        </div>
+        <code class="text-green-400 text-xs leading-relaxed">helm upgrade --install boxy oci://ghcr.io/niradler/charts/boxy \<br>
+  --version 0.0.2 --namespace boxy --create-namespace \<br>
+  --set router.auth.staticToken="$(openssl rand -hex 16)"</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── KEY NUMBERS ─────────────────────────────────────────── -->
+<section class="bg-white border-b border-gray-200">
+  <div class="max-w-6xl mx-auto px-4 py-8 grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+    <div class="p-4">
+      <div class="text-2xl font-bold text-blue-600">50–200 ms</div>
+      <div class="text-xs text-gray-500 mt-1">First exec latency (warm pod)</div>
+    </div>
+    <div class="p-4">
+      <div class="text-2xl font-bold text-green-600">50 × 20</div>
+      <div class="text-xs text-gray-500 mt-1">Pods × sandboxes = 1 000 max</div>
+    </div>
+    <div class="p-4">
+      <div class="text-2xl font-bold text-purple-600">0 MB</div>
+      <div class="text-xs text-gray-500 mt-1">Memory per idle sandbox</div>
+    </div>
+    <div class="p-4">
+      <div class="text-2xl font-bold text-orange-600">3</div>
+      <div class="text-xs text-gray-500 mt-1">Go components to deploy</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── ARCHITECTURE ────────────────────────────────────────── -->
+<section id="architecture" class="py-16 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Architecture</h2>
+      <p class="text-gray-500 max-w-2xl mx-auto text-sm">Three tiers, each with a single responsibility. The router is the only public-facing component. All sandbox state lives in Kubernetes CRs and controller node storage — the router and operator are fully stateless.</p>
+    </div>
+
+    <!-- ByteBytego-style diagram -->
+    <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 md:p-8 mb-6">
+
+      <!-- Tier 1: Client → Router ↔ Operator -->
+      <div class="flex flex-col md:flex-row items-stretch gap-3 mb-4">
+        <!-- Client -->
+        <div class="comp-client border-2 rounded-xl p-4 md:w-36 flex-shrink-0">
+          <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Clients</div>
+          <div class="text-sm space-y-2 text-gray-700">
+            <div class="flex items-center gap-2">🌐 <span>REST Client</span></div>
+            <div class="flex items-center gap-2">🤖 <span>AI / MCP</span></div>
+          </div>
+        </div>
+
+        <!-- Arrow: Bearer -->
+        <div class="hidden md:flex flex-col items-center justify-center px-1 text-gray-400 text-xs gap-1">
+          <span class="font-mono">Bearer →</span>
+        </div>
+        <div class="flex md:hidden justify-center text-gray-400 text-xs">Bearer ↓</div>
+
+        <!-- Router -->
+        <div class="comp-router border-2 rounded-xl p-4 flex-1">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-blue-700 uppercase tracking-widest">boxy-router</span>
+            <span class="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium">Deployment × N</span>
+          </div>
+          <div class="text-sm text-gray-700 space-y-1.5">
+            <div class="flex items-center"><span class="badge">1</span>Auth — SA token via TokenReview (or static dev bypass)</div>
+            <div class="flex items-center"><span class="badge">2</span>Validate body, parse request fields</div>
+            <div class="flex items-center"><span class="badge">3</span>Create / read / delete Sandbox CRs</div>
+            <div class="flex items-center"><span class="badge">4</span>Proxy exec to controller via mTLS</div>
+            <div class="flex items-center"><span class="badge">5</span>MCP server — exposes <code class="bg-blue-100 px-1 rounded text-xs">bash</code> tool</div>
+          </div>
+        </div>
+
+        <!-- Arrow: CRD watch -->
+        <div class="hidden md:flex flex-col items-center justify-center px-1 text-gray-400 text-xs gap-1">
+          <span class="font-mono">CRD ↔</span>
+        </div>
+        <div class="flex md:hidden justify-center text-gray-400 text-xs">CRD ↕</div>
+
+        <!-- Operator -->
+        <div class="comp-op border-2 rounded-xl p-4 md:w-52 flex-shrink-0">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-purple-700 uppercase tracking-widest">boxy-operator</span>
+            <span class="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-medium">leader-elected</span>
+          </div>
+          <div class="text-sm text-gray-700 space-y-1.5">
+            <div class="flex items-center"><span class="badge badge-op">A</span>Bin-pack → assign pod</div>
+            <div class="flex items-center"><span class="badge badge-op">B</span>Auto-scale StatefulSet</div>
+            <div class="flex items-center"><span class="badge badge-op">C</span>TTL expiry + GC</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- mTLS arrow down -->
+      <div class="flex justify-center mb-4">
+        <div class="text-center text-gray-400">
+          <div class="text-xs font-mono mb-0.5">mTLS (mutual cert auth)</div>
+          <div class="text-2xl leading-none">↓</div>
+        </div>
+      </div>
+
+      <!-- Tier 2: Controller StatefulSet -->
+      <div class="comp-ctrl border-2 rounded-xl p-4 mb-4">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-xs font-semibold text-green-700 uppercase tracking-widest">boxy-controller</span>
+          <span class="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium">StatefulSet (auto-scaled by operator)</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="bg-white rounded-lg border border-green-200 p-3">
+            <div class="text-xs font-mono font-bold text-gray-600 mb-2">boxy-ctrl-0</div>
+            <div class="grid grid-cols-2 gap-1.5">
+              <div class="comp-sandbox border rounded-lg p-2 text-xs font-mono text-center text-amber-800">
+                sandbox-A<br><span class="text-gray-400 text-[10px]">/workspace</span>
+              </div>
+              <div class="comp-sandbox border rounded-lg p-2 text-xs font-mono text-center text-amber-800">
+                sandbox-B<br><span class="text-gray-400 text-[10px]">/workspace</span>
+              </div>
+            </div>
+          </div>
+          <div class="bg-white rounded-lg border border-green-200 p-3">
+            <div class="text-xs font-mono font-bold text-gray-600 mb-2">boxy-ctrl-1</div>
+            <div class="grid grid-cols-2 gap-1.5">
+              <div class="comp-sandbox border rounded-lg p-2 text-xs font-mono text-center text-amber-800">
+                sandbox-C<br><span class="text-gray-400 text-[10px]">/workspace</span>
+              </div>
+              <div class="border-2 border-dashed border-gray-200 rounded-lg p-2 text-xs font-mono text-center text-gray-300">
+                —
+              </div>
+            </div>
+          </div>
+          <div class="bg-white rounded-lg border border-dashed border-green-200 p-3 flex flex-col items-center justify-center text-gray-300 text-sm">
+            <div class="text-2xl mb-1">+</div>
+            <div class="text-xs">scale on demand</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tier 3: nsjail isolation -->
+      <div class="comp-sandbox border-2 rounded-xl p-4">
+        <div class="text-xs font-semibold text-amber-700 uppercase tracking-widest mb-3">nsjail sandbox isolation layers</div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="bg-white rounded-lg border border-amber-200 p-3 text-center">
+            <div class="text-xl mb-2">🗂️</div>
+            <div class="text-xs font-semibold text-gray-800 mb-1">Mount Namespace</div>
+            <div class="text-xs text-gray-500 leading-relaxed">R/O Ubuntu 24.04 rootfs<br>R/W /workspace<br>tmpfs /tmp per-exec</div>
+          </div>
+          <div class="bg-white rounded-lg border border-amber-200 p-3 text-center">
+            <div class="text-xl mb-2">🔌</div>
+            <div class="text-xs font-semibold text-gray-800 mb-1">Network Namespace</div>
+            <div class="text-xs text-gray-500 leading-relaxed">No internet by default<br>opt-in: allowInternetAccess<br>MACVLAN / pasta modes</div>
+          </div>
+          <div class="bg-white rounded-lg border border-amber-200 p-3 text-center">
+            <div class="text-xl mb-2">🔬</div>
+            <div class="text-xs font-semibold text-gray-800 mb-1">PID + UTS Namespace</div>
+            <div class="text-xs text-gray-500 leading-relaxed">Isolated process tree<br>Custom hostname<br>SIGKILL on timeout</div>
+          </div>
+          <div class="bg-white rounded-lg border border-amber-200 p-3 text-center">
+            <div class="text-xl mb-2">⚡</div>
+            <div class="text-xs font-semibold text-gray-800 mb-1">cgroup + rlimits</div>
+            <div class="text-xs text-gray-500 leading-relaxed">memoryMb via cgroup<br>cpu / nofile / nproc<br>wall-clock timeout</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sandbox state machine -->
+    <div class="bg-white border border-gray-200 rounded-2xl shadow-sm p-6 md:p-8">
+      <h3 class="text-lg font-bold mb-5">Sandbox lifecycle</h3>
+      <div class="flex flex-wrap items-center gap-2 text-sm font-mono">
+        <div class="bg-gray-100 border border-gray-300 rounded-lg px-4 py-2 text-gray-700">Pending</div>
+        <div class="text-gray-400 flex flex-col items-center text-xs"><span>assign pod</span><span>→</span></div>
+        <div class="bg-blue-100 border border-blue-300 rounded-lg px-4 py-2 text-blue-700">Creating</div>
+        <div class="text-gray-400 flex flex-col items-center text-xs"><span>ctrl POST /v1/sandboxes</span><span>→</span></div>
+        <div class="bg-green-100 border border-green-300 rounded-lg px-4 py-2 text-green-700">Running</div>
+        <div class="text-gray-400 flex flex-col items-center text-xs"><span>TTL / delete</span><span>→</span></div>
+        <div class="bg-orange-100 border border-orange-300 rounded-lg px-4 py-2 text-orange-700">Deleting</div>
+        <div class="text-gray-400 flex flex-col items-center text-xs"><span>GC after N s</span><span>→</span></div>
+        <div class="bg-gray-100 border border-gray-300 rounded-lg px-4 py-2 text-gray-500">Terminated</div>
+      </div>
+      <p class="text-xs text-gray-500 mt-4">TTL is a sliding window — refreshed on every exec. A sandbox pinned to a controller pod; if that pod restarts, the router detects the stale route, resets the CR to Pending, and the operator reassigns it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── DUAL-TRACK DESIGN ───────────────────────────────────── -->
+<section class="bg-white py-16 px-4 border-t border-gray-100">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Dual-track output design</h2>
+      <p class="text-gray-500 max-w-2xl mx-auto text-sm">One sandbox runtime, two client models. Developers talk REST; AI agents talk MCP. The same nsjail execution engine serves both — no separate code paths, no duplication.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6">
+      <!-- REST API -->
+      <div class="rounded-2xl border-2 border-blue-200 bg-blue-50 p-6">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-11 h-11 bg-blue-600 rounded-xl flex items-center justify-center text-white text-xl">🌐</div>
+          <div>
+            <div class="font-bold text-blue-900 text-base">REST API</div>
+            <div class="text-xs text-blue-600 font-medium">For developers, services, CI pipelines</div>
+          </div>
+        </div>
+        <ul class="text-sm text-gray-700 space-y-2 mb-5">
+          <li class="flex items-start gap-2"><span class="text-blue-500 font-bold mt-0.5">✓</span>JSON over HTTP — works with any HTTP client</li>
+          <li class="flex items-start gap-2"><span class="text-blue-500 font-bold mt-0.5">✓</span>Full lifecycle: create, exec, delete sandboxes</li>
+          <li class="flex items-start gap-2"><span class="text-blue-500 font-bold mt-0.5">✓</span>SA token auth via Kubernetes TokenReview</li>
+          <li class="flex items-start gap-2"><span class="text-blue-500 font-bold mt-0.5">✓</span>Structured error codes with clear semantics</li>
+        </ul>
+        <pre class="!m-0"><code class="language-json rounded-lg text-xs">{"exitCode": 0, "stdout": "hello from nsjail\n",
+ "stderr": "", "timedOut": false}</code></pre>
+      </div>
+      <!-- MCP -->
+      <div class="rounded-2xl border-2 border-purple-200 bg-purple-50 p-6">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-11 h-11 bg-purple-600 rounded-xl flex items-center justify-center text-white text-xl">🤖</div>
+          <div>
+            <div class="font-bold text-purple-900 text-base">MCP Server</div>
+            <div class="text-xs text-purple-600 font-medium">For AI agents — Claude, Codex, any MCP client</div>
+          </div>
+        </div>
+        <ul class="text-sm text-gray-700 space-y-2 mb-5">
+          <li class="flex items-start gap-2"><span class="text-purple-500 font-bold mt-0.5">✓</span>Model Context Protocol (JSON-RPC 2.0)</li>
+          <li class="flex items-start gap-2"><span class="text-purple-500 font-bold mt-0.5">✓</span>Streamable HTTP transport — stateless</li>
+          <li class="flex items-start gap-2"><span class="text-purple-500 font-bold mt-0.5">✓</span><code class="bg-purple-100 px-1 rounded">bash</code> tool agents call like a function</li>
+          <li class="flex items-start gap-2"><span class="text-purple-500 font-bold mt-0.5">✓</span>Optional default sandbox for stateless clients</li>
+        </ul>
+        <pre class="!m-0"><code class="language-json rounded-lg text-xs">{"content": [{"type": "text",
+  "text": "hello from nsjail\n"}]}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── USE CASES ───────────────────────────────────────────── -->
+<section id="usecases" class="py-16 px-4 bg-gray-50">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Use cases</h2>
+    </div>
+    <div class="grid md:grid-cols-3 gap-4">
+      <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div class="text-2xl mb-3">🤖</div>
+        <h3 class="font-bold text-gray-900 mb-2">AI agent code execution</h3>
+        <p class="text-sm text-gray-600">Give Claude, Codex, or any LLM a real bash shell backed by an isolated Ubuntu environment. Low-latency exec, stateful workspace per session, native MCP support.</p>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div class="text-2xl mb-3">🏗️</div>
+        <h3 class="font-bold text-gray-900 mb-2">CI step isolation</h3>
+        <p class="text-sm text-gray-600">Isolate build steps from each other without spinning up full containers. File isolation between jobs, reproducible Ubuntu 24.04 rootfs, no image pull on every run.</p>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div class="text-2xl mb-3">🧑‍💻</div>
+        <h3 class="font-bold text-gray-900 mb-2">Interactive shells</h3>
+        <p class="text-sm text-gray-600">Provision on-demand shell environments for users. Strong cross-sandbox isolation, TTL enforcement, per-session persistent workspace that survives multiple exec calls.</p>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div class="text-2xl mb-3">🔍</div>
+        <h3 class="font-bold text-gray-900 mb-2">Script evaluation API</h3>
+        <p class="text-sm text-gray-600">Evaluate user-supplied scripts safely. Output capture, timeout enforcement, cgroup memory caps, and blocked network namespaces prevent abuse.</p>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div class="text-2xl mb-3">🔒</div>
+        <h3 class="font-bold text-gray-900 mb-2">Secure code execution API</h3>
+        <p class="text-sm text-gray-600">Build a service that runs untrusted code. Validated inputs, read-only base OS, isolated network namespace, and rlimits bound every execution.</p>
+      </div>
+      <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+        <div class="text-2xl mb-3">⚙️</div>
+        <h3 class="font-bold text-gray-900 mb-2">Sandboxed tool execution</h3>
+        <p class="text-sm text-gray-600">Bind-mount specific binaries (curl, python3, jq) into sandboxes via <code class="bg-gray-100 px-1 rounded text-xs">allowedBinaries</code> — whitelist exactly what each sandbox can run.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── REQUEST FLOWS ───────────────────────────────────────── -->
+<section class="bg-white py-16 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Request flows</h2>
+    </div>
+    <div class="grid md:grid-cols-2 gap-8">
+      <!-- Create flow -->
+      <div>
+        <h3 class="font-bold text-lg mb-4 flex items-center gap-2">
+          <span class="w-6 h-6 bg-green-600 rounded-full text-white text-xs flex items-center justify-center font-bold">+</span>
+          Create sandbox
+        </h3>
+        <div class="flow-col">
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>POST /v1/sandboxes {sandboxId, ttlSeconds, …}</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>Validates auth + body · creates Sandbox CR (phase: Pending)</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-purple-600 text-xs">boxy-operator</span><br>Watches CR · bin-packs to a controller pod · sets phase: Creating</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-green-600 text-xs">boxy-controller</span><br>POST /v1/sandboxes · mkdir /workspace · nsjail ready</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-purple-600 text-xs">boxy-operator</span><br>Sets phase: Running</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>← 201 Created {sandboxId, phase: "Running", ready: true}</div>
+        </div>
+      </div>
+      <!-- Exec flow -->
+      <div>
+        <h3 class="font-bold text-lg mb-4 flex items-center gap-2">
+          <span class="w-6 h-6 bg-blue-600 rounded-full text-white text-xs flex items-center justify-center font-bold">▶</span>
+          Execute command
+        </h3>
+        <div class="flow-col">
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>POST /v1/exec {sandboxId, command, args, timeoutSeconds}</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>Reads Sandbox CR · resolves controllerAddress</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>POST /v1/exec over mTLS → boxy-controller</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-green-600 text-xs">boxy-controller</span><br>Builds NsjailConfig proto · writes to temp file · spawns nsjail process</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-amber-600 text-xs">nsjail sandbox</span><br>Executes command · captures stdout/stderr · exits (or SIGKILLed on timeout)</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>← 200 {exitCode, stdout, stderr, timedOut}</div>
+        </div>
+        <p class="text-xs text-gray-400 mt-4">Router also updates <code class="bg-gray-100 px-1 rounded">lastExecAt</code> on the CR to slide the TTL window.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── QUICK START ─────────────────────────────────────────── -->
+<section id="quickstart" class="py-16 px-4 bg-gray-900 text-white">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Quick start</h2>
+      <p class="text-gray-400 text-sm max-w-xl mx-auto">Requires a Kubernetes cluster (kind works), kubectl, helm ≥ 3.x</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6">
+      <!-- Install -->
+      <div>
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">1 · Install</h3>
+        <pre><code class="language-bash rounded-xl">helm upgrade --install boxy \
+  oci://ghcr.io/niradler/charts/boxy \
+  --version 0.0.2 \
+  --namespace boxy --create-namespace \
+  --set router.auth.staticToken="$(openssl rand -hex 16)"</code></pre>
+      </div>
+      <!-- Get token -->
+      <div>
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">2 · Get a token</h3>
+        <pre><code class="language-bash rounded-xl"># Kubernetes ServiceAccount token (production)
+export TOKEN=$(kubectl create token <your-sa> \
+  -n <namespace> --duration=3600s)
+
+# Or use the static token set during install (dev only)
+export TOKEN=<your-static-token>
+export BASE=http://&lt;router-service&gt;:8080</code></pre>
+      </div>
+      <!-- Create sandbox -->
+      <div>
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">3 · Create a sandbox</h3>
+        <pre><code class="language-bash rounded-xl">curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo","sandboxId":"demo-1",
+       "owner":"you","ttlSeconds":3600}' \
+  $BASE/v1/sandboxes | jq .</code></pre>
+      </div>
+      <!-- Execute -->
+      <div>
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">4 · Execute a command</h3>
+        <pre><code class="language-bash rounded-xl">curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo","sandboxId":"demo-1",
+       "command":"sh","args":["-c","echo hello"],
+       "timeoutSeconds":30}' \
+  $BASE/v1/exec | jq .
+
+# Response:
+# { "exitCode": 0, "stdout": "hello\n",
+#   "stderr": "", "timedOut": false }</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── API REFERENCE ──────────────────────────────────────── -->
+<section id="api" class="py-16 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">API reference</h2>
+    </div>
+
+    <!-- Endpoints summary -->
+    <div class="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden mb-8">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b border-gray-200">
+          <tr>
+            <th class="text-left px-5 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Method</th>
+            <th class="text-left px-5 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Path</th>
+            <th class="text-left px-5 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Description</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-green-100 text-green-700 px-2 py-0.5 rounded font-mono text-xs font-bold">GET</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/healthz</td>
+            <td class="px-5 py-3 text-gray-600">Liveness check — returns <code class="bg-gray-100 px-1 rounded text-xs">200 ok</code></td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes</td>
+            <td class="px-5 py-3 text-gray-600">Create a sandbox. Returns <code class="bg-gray-100 px-1 rounded text-xs">201</code> when Running</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-green-100 text-green-700 px-2 py-0.5 rounded font-mono text-xs font-bold">GET</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes/{sandboxId}</td>
+            <td class="px-5 py-3 text-gray-600">Get sandbox status and metadata</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-red-100 text-red-700 px-2 py-0.5 rounded font-mono text-xs font-bold">DELETE</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes/{sandboxId}</td>
+            <td class="px-5 py-3 text-gray-600">Delete sandbox and remove its CR</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/exec</td>
+            <td class="px-5 py-3 text-gray-600">Execute a command in an existing sandbox</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/mcp</td>
+            <td class="px-5 py-3 text-gray-600">MCP endpoint — JSON-RPC 2.0 over Streamable HTTP</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- POST /v1/sandboxes body -->
+    <div class="grid md:grid-cols-2 gap-6 mb-6">
+      <div>
+        <h3 class="font-bold text-base mb-3">POST /v1/sandboxes — request body</h3>
+        <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 border-b border-gray-100">
+              <tr>
+                <th class="text-left px-4 py-2.5 font-semibold text-gray-500">Field</th>
+                <th class="text-left px-4 py-2.5 font-semibold text-gray-500">Type</th>
+                <th class="text-left px-4 py-2.5 font-semibold text-gray-500">Notes</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="px-4 py-2 font-mono text-blue-700">sandboxId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required. Unique ID</td></tr>
+              <tr><td class="px-4 py-2 font-mono text-blue-700">sessionId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required. Session correlation</td></tr>
+              <tr><td class="px-4 py-2 font-mono text-blue-700">owner*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required</td></tr>
+              <tr><td class="px-4 py-2 font-mono">ttlSeconds</td><td class="px-4 py-2">int</td><td class="px-4 py-2 text-gray-500">0 = no expiry. Sliding window</td></tr>
+              <tr><td class="px-4 py-2 font-mono">env</td><td class="px-4 py-2">map</td><td class="px-4 py-2 text-gray-500">Max 64 keys. KUBERNETES_* / BOXY_* blocked</td></tr>
+              <tr><td class="px-4 py-2 font-mono">allowedBinaries</td><td class="px-4 py-2">string[]</td><td class="px-4 py-2 text-gray-500">Whitelist of binaries to bind-mount</td></tr>
+              <tr><td class="px-4 py-2 font-mono">vm.memoryMb</td><td class="px-4 py-2">int</td><td class="px-4 py-2 text-gray-500">cgroup memory cap</td></tr>
+              <tr><td class="px-4 py-2 font-mono">vm.rlimits</td><td class="px-4 py-2">array</td><td class="px-4 py-2 text-gray-500">as, cpu, fsize, nofile, nproc, stack</td></tr>
+              <tr><td class="px-4 py-2 font-mono">network.allowInternetAccess</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Disable network NS isolation</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 class="font-bold text-base mb-3">POST /v1/exec — request body</h3>
+        <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+          <table class="w-full text-xs">
+            <thead class="bg-gray-50 border-b border-gray-100">
+              <tr>
+                <th class="text-left px-4 py-2.5 font-semibold text-gray-500">Field</th>
+                <th class="text-left px-4 py-2.5 font-semibold text-gray-500">Type</th>
+                <th class="text-left px-4 py-2.5 font-semibold text-gray-500">Notes</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="px-4 py-2 font-mono text-blue-700">sandboxId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required</td></tr>
+              <tr><td class="px-4 py-2 font-mono text-blue-700">sessionId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required</td></tr>
+              <tr><td class="px-4 py-2 font-mono text-blue-700">command*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required. Resolved against rootfs PATH</td></tr>
+              <tr><td class="px-4 py-2 font-mono text-blue-700">timeoutSeconds*</td><td class="px-4 py-2">int</td><td class="px-4 py-2 text-gray-500">Required. 1–3600. Hard SIGKILL</td></tr>
+              <tr><td class="px-4 py-2 font-mono">args</td><td class="px-4 py-2">string[]</td><td class="px-4 py-2 text-gray-500">Max 256 args</td></tr>
+              <tr><td class="px-4 py-2 font-mono">env</td><td class="px-4 py-2">map</td><td class="px-4 py-2 text-gray-500">Per-exec env overrides</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="mt-4">
+          <h3 class="font-bold text-base mb-3">HTTP status codes</h3>
+          <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+            <table class="w-full text-xs">
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="px-4 py-2"><span class="bg-green-100 text-green-700 px-1.5 rounded font-mono">200/201</span></td><td class="px-4 py-2 text-gray-600">Success</td></tr>
+                <tr><td class="px-4 py-2"><span class="bg-yellow-100 text-yellow-700 px-1.5 rounded font-mono">400</span></td><td class="px-4 py-2 text-gray-600">Bad request — missing field, blocked env prefix, body &gt;6 MB</td></tr>
+                <tr><td class="px-4 py-2"><span class="bg-red-100 text-red-700 px-1.5 rounded font-mono">401</span></td><td class="px-4 py-2 text-gray-600">Missing, expired, or invalid bearer token</td></tr>
+                <tr><td class="px-4 py-2"><span class="bg-red-100 text-red-700 px-1.5 rounded font-mono">404</span></td><td class="px-4 py-2 text-gray-600">Sandbox not found</td></tr>
+                <tr><td class="px-4 py-2"><span class="bg-red-100 text-red-700 px-1.5 rounded font-mono">409</span></td><td class="px-4 py-2 text-gray-600">Sandbox already exists</td></tr>
+                <tr><td class="px-4 py-2"><span class="bg-orange-100 text-orange-700 px-1.5 rounded font-mono">429</span></td><td class="px-4 py-2 text-gray-600">Concurrency limit hit (semaphore full)</td></tr>
+                <tr><td class="px-4 py-2"><span class="bg-red-100 text-red-700 px-1.5 rounded font-mono">502/503</span></td><td class="px-4 py-2 text-gray-600">Controller pod unreachable or not ready</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── MCP SERVER ──────────────────────────────────────────── -->
+<section id="mcp" class="py-16 px-4 bg-gray-50">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">MCP server</h2>
+      <p class="text-gray-500 max-w-xl mx-auto text-sm">POST /mcp — JSON-RPC 2.0 over Streamable HTTP. Stateless, no session management. Built with the official Go MCP SDK.</p>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6">
+      <div>
+        <h3 class="font-bold text-base mb-3">Required headers</h3>
+        <pre><code class="language-text rounded-xl">Authorization: Bearer &lt;BOXY_ROUTER_TOKEN&gt;
+Content-Type: application/json
+Accept: application/json, text/event-stream</code></pre>
+        <div class="bg-white border border-gray-200 rounded-xl p-4 mt-4 text-sm">
+          <p class="font-semibold mb-2">Sandbox routing</p>
+          <p class="text-gray-600 text-sm">Set <code class="bg-gray-100 px-1 rounded text-xs">X-Sandbox-Id</code> header to target a specific sandbox. Omit to use the default sandbox (requires <code class="bg-gray-100 px-1 rounded text-xs">BOXY_DEFAULT_SANDBOX_ENABLED=true</code>).</p>
+        </div>
+        <div class="bg-white border border-gray-200 rounded-xl p-4 mt-4 text-sm">
+          <p class="font-semibold mb-2">Available tools</p>
+          <div class="flex items-start gap-3">
+            <code class="bg-purple-100 text-purple-700 px-2 py-1 rounded text-xs font-mono">bash</code>
+            <div class="text-sm text-gray-600">Runs a shell command in the target sandbox. Parameters: <code class="bg-gray-100 px-1 rounded text-xs">command</code> (string, required), <code class="bg-gray-100 px-1 rounded text-xs">timeoutSeconds</code> (int, default 60).</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3 class="font-bold text-base mb-3">Example calls</h3>
+        <pre><code class="language-bash rounded-xl"># Initialize MCP session
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
+       "params":{"protocolVersion":"2025-03-26",
+                 "clientInfo":{"name":"cli","version":"1.0"},
+                 "capabilities":{}}}' \
+  $BASE/mcp | jq .
+
+# Call bash tool
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-Sandbox-Id: demo-1" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
+       "params":{"name":"bash",
+                 "arguments":{"command":"echo hello"}}}' \
+  $BASE/mcp | jq .</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CONFIGURATION ──────────────────────────────────────── -->
+<section id="config" class="py-16 px-4 bg-white">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Configuration</h2>
+      <p class="text-gray-500 max-w-xl mx-auto text-sm">All configuration is via environment variables. The Helm chart injects sensible defaults; override only what you need.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-6">
+      <!-- Router -->
+      <div>
+        <div class="flex items-center gap-2 mb-4">
+          <div class="w-3 h-3 rounded-full bg-blue-500"></div>
+          <h3 class="font-bold text-base">boxy-router</h3>
+        </div>
+        <div class="bg-white border-2 border-blue-100 rounded-xl overflow-hidden shadow-sm">
+          <table class="w-full text-xs">
+            <thead class="bg-blue-50 border-b border-blue-100">
+              <tr>
+                <th class="text-left px-3 py-2 font-semibold text-blue-700">Variable</th>
+                <th class="text-left px-3 py-2 font-semibold text-blue-700">Default</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_ROUTER_TOKEN</td><td class="px-3 py-2 text-gray-500">—</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_SANDBOX_NAMESPACE</td><td class="px-3 py-2 text-gray-500">default</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_LISTEN_ADDR</td><td class="px-3 py-2 text-gray-500">:8080</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_CONCURRENCY</td><td class="px-3 py-2 text-gray-500">100</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_TIMEOUT_SECONDS</td><td class="px-3 py-2 text-gray-500">3600</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_BODY_BYTES</td><td class="px-3 py-2 text-gray-500">6 MB</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_OUTPUT_BYTES</td><td class="px-3 py-2 text-gray-500">6 MB</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MTLS_DISABLED</td><td class="px-3 py-2 text-gray-500">false</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_DEFAULT_SANDBOX_ENABLED</td><td class="px-3 py-2 text-gray-500">false</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <!-- Operator -->
+      <div>
+        <div class="flex items-center gap-2 mb-4">
+          <div class="w-3 h-3 rounded-full bg-purple-500"></div>
+          <h3 class="font-bold text-base">boxy-operator</h3>
+        </div>
+        <div class="bg-white border-2 border-purple-100 rounded-xl overflow-hidden shadow-sm">
+          <table class="w-full text-xs">
+            <thead class="bg-purple-50 border-b border-purple-100">
+              <tr>
+                <th class="text-left px-3 py-2 font-semibold text-purple-700">Variable</th>
+                <th class="text-left px-3 py-2 font-semibold text-purple-700">Default</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_NAMESPACE</td><td class="px-3 py-2 text-red-500 font-semibold">required</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_SANDBOXES_PER_CONTROLLER</td><td class="px-3 py-2 text-gray-500">20</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_CONTROLLER_REPLICAS</td><td class="px-3 py-2 text-gray-500">50</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MIN_CONTROLLER_REPLICAS</td><td class="px-3 py-2 text-gray-500">1</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_SCALE_DOWN_COOLDOWN_SECONDS</td><td class="px-3 py-2 text-gray-500">300</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_TERMINATED_RETENTION_SECONDS</td><td class="px-3 py-2 text-gray-500">3600</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_CONTROLLER_PORT</td><td class="px-3 py-2 text-gray-500">8080</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MTLS_DISABLED</td><td class="px-3 py-2 text-gray-500">false</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <!-- Controller -->
+      <div>
+        <div class="flex items-center gap-2 mb-4">
+          <div class="w-3 h-3 rounded-full bg-green-500"></div>
+          <h3 class="font-bold text-base">boxy-controller</h3>
+        </div>
+        <div class="bg-white border-2 border-green-100 rounded-xl overflow-hidden shadow-sm">
+          <table class="w-full text-xs">
+            <thead class="bg-green-50 border-b border-green-100">
+              <tr>
+                <th class="text-left px-3 py-2 font-semibold text-green-700">Variable</th>
+                <th class="text-left px-3 py-2 font-semibold text-green-700">Default</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_SANDBOXES</td><td class="px-3 py-2 text-gray-500">20</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_EXEC_CONCURRENCY</td><td class="px-3 py-2 text-gray-500">50</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MAX_OUTPUT_BYTES</td><td class="px-3 py-2 text-gray-500">6 MB</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_CONTROLLER_TOKEN</td><td class="px-3 py-2 text-gray-500">auto (Helm)</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_NSJAIL_PATH</td><td class="px-3 py-2 text-gray-500">/usr/sbin/nsjail</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_NSJAIL_ROOTFS</td><td class="px-3 py-2 text-gray-500">/rootfs/ubuntu-24.04</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_NSJAIL_SANDBOX_ROOT</td><td class="px-3 py-2 text-gray-500">/var/lib/boxy/sandboxes</td></tr>
+              <tr><td class="px-3 py-2 font-mono text-gray-700">BOXY_MTLS_DISABLED</td><td class="px-3 py-2 text-gray-500">false</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SECURITY ────────────────────────────────────────────── -->
+<section id="security" class="py-16 px-4 bg-gray-50">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Security model</h2>
+    </div>
+    <div class="grid md:grid-cols-2 gap-6 mb-8">
+      <!-- Auth layers -->
+      <div class="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
+        <h3 class="font-bold text-base mb-4">Authentication layers</h3>
+        <div class="space-y-3">
+          <div class="flex items-start gap-3 p-3 bg-blue-50 rounded-xl border border-blue-100">
+            <div class="w-6 h-6 bg-blue-600 rounded flex-shrink-0 flex items-center justify-center text-white text-xs font-bold mt-0.5">1</div>
+            <div>
+              <div class="text-sm font-semibold text-blue-900">Client → Router: Bearer token</div>
+              <div class="text-xs text-gray-600 mt-0.5">SA token validated via Kubernetes TokenReview API (production) <em>or</em> static bypass token (dev/e2e). All authenticated callers have equal access — no per-caller RBAC.</div>
+            </div>
+          </div>
+          <div class="flex items-start gap-3 p-3 bg-green-50 rounded-xl border border-green-100">
+            <div class="w-6 h-6 bg-green-600 rounded flex-shrink-0 flex items-center justify-center text-white text-xs font-bold mt-0.5">2</div>
+            <div>
+              <div class="text-sm font-semibold text-green-900">Router/Operator → Controller: mTLS</div>
+              <div class="text-xs text-gray-600 mt-0.5">Mutual TLS with a Helm-generated CA. Identity is CA membership. Disable with <code class="bg-gray-100 px-1 rounded">BOXY_MTLS_DISABLED=true</code> for local dev only.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Container caps -->
+      <div class="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
+        <h3 class="font-bold text-base mb-4">Controller pod capabilities</h3>
+        <div class="text-xs font-mono space-y-1.5">
+          <div class="flex items-center gap-2"><span class="text-green-600 font-bold">+</span> <span>SYS_ADMIN</span><span class="text-gray-400 ml-1">(namespace setup)</span></div>
+          <div class="flex items-center gap-2"><span class="text-green-600 font-bold">+</span> <span>SETUID, SETGID, SETPCAP</span></div>
+          <div class="flex items-center gap-2"><span class="text-green-600 font-bold">+</span> <span>NET_ADMIN</span><span class="text-gray-400 ml-1">(network namespaces)</span></div>
+          <div class="flex items-center gap-2"><span class="text-green-600 font-bold">+</span> <span>SYS_CHROOT, MKNOD</span></div>
+          <div class="flex items-center gap-2 mt-2"><span class="text-red-500 font-bold">−</span> <span class="text-gray-500">ALL others dropped</span></div>
+          <div class="flex items-center gap-2"><span class="text-red-500 font-bold">−</span> <span class="text-gray-500">allowPrivilegeEscalation: false</span></div>
+        </div>
+      </div>
+    </div>
+    <!-- Threat model table -->
+    <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+      <div class="px-6 py-4 border-b border-gray-100">
+        <h3 class="font-bold text-base">Threat model</h3>
+      </div>
+      <table class="w-full text-xs">
+        <thead class="bg-gray-50 border-b border-gray-100">
+          <tr>
+            <th class="text-left px-5 py-3 font-semibold text-gray-500 w-2/5">Threat</th>
+            <th class="text-left px-5 py-3 font-semibold text-gray-500">Mitigation</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-50">
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Unauthorized API access</td>
+            <td class="px-5 py-3 text-gray-600">Bearer token on every route — SA token via TokenReview (prod) or static dev bypass</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Router/operator impersonation toward controller</td>
+            <td class="px-5 py-3 text-gray-600">mTLS with shared CA — both sides verify cert against same CA</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Sandbox escaping to host filesystem</td>
+            <td class="px-5 py-3 text-gray-600">nsjail mount namespace + R/O rootfs; only /workspace (R/W) and /tmp (tmpfs) are writable</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Sandbox reaching other sandboxes over network</td>
+            <td class="px-5 py-3 text-gray-600">Isolated network namespace per sandbox by default</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Sandbox exhausting host memory</td>
+            <td class="px-5 py-3 text-gray-600"><code class="bg-gray-100 px-1 rounded">--cgroup_mem_max</code> enforced by nsjail when vm.memoryMb is set</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Sandbox running forever</td>
+            <td class="px-5 py-3 text-gray-600"><code class="bg-gray-100 px-1 rounded">--time_limit</code> (nsjail SIGKILLs) + TTL sliding window (operator GCs the CR)</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3 text-gray-700">Malicious env var injection (KUBERNETES_*, BOXY_*)</td>
+            <td class="px-5 py-3 text-gray-600">Blocked prefixes at the router; max 64 keys, values ≤ 16 KB</td>
+          </tr>
+          <tr class="hover:bg-gray-50 bg-yellow-50">
+            <td class="px-5 py-3 text-yellow-800 font-medium">⚠ No per-caller tenant isolation</td>
+            <td class="px-5 py-3 text-yellow-700">All authenticated callers share equal access — single-tenant only in this release</td>
+          </tr>
+          <tr class="hover:bg-gray-50 bg-yellow-50">
+            <td class="px-5 py-3 text-yellow-800 font-medium">⚠ Sandbox processes run as uid 0</td>
+            <td class="px-5 py-3 text-yellow-700">Linux user namespace uid remapping is disabled (incompatible with most container runtimes + CAP_SYS_ADMIN). Security boundary is mount/PID/network NS isolation</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ──────────────────────────────────────────────── -->
+<footer class="bg-gray-900 text-gray-400 py-12 px-4">
+  <div class="max-w-6xl mx-auto flex flex-col md:flex-row items-start justify-between gap-8">
+    <div>
+      <div class="font-mono font-bold text-white text-lg mb-2">📦 boxy</div>
+      <p class="text-sm max-w-xs leading-relaxed">Kubernetes-native sandbox runtime. Run isolated shell commands — no VMs, no hypervisors.</p>
+      <div class="flex gap-4 mt-4 text-xs">
+        <a href="https://github.com/niradler/boxy" target="_blank" class="hover:text-white transition-colors">GitHub</a>
+        <a href="https://github.com/niradler/boxy/blob/main/LICENSE" target="_blank" class="hover:text-white transition-colors">MIT License</a>
+        <a href="https://github.com/niradler/boxy/issues" target="_blank" class="hover:text-white transition-colors">Issues</a>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-x-12 gap-y-4 text-sm">
+      <div>
+        <div class="text-white font-semibold mb-2 text-xs uppercase tracking-widest">Docs</div>
+        <div class="space-y-1.5">
+          <div><a href="#architecture" class="hover:text-white transition-colors">Architecture</a></div>
+          <div><a href="#quickstart" class="hover:text-white transition-colors">Quick start</a></div>
+          <div><a href="https://github.com/niradler/boxy/blob/main/docs/architecture.md" target="_blank" class="hover:text-white transition-colors">Deep dive →</a></div>
+        </div>
+      </div>
+      <div>
+        <div class="text-white font-semibold mb-2 text-xs uppercase tracking-widest">API</div>
+        <div class="space-y-1.5">
+          <div><a href="#api" class="hover:text-white transition-colors">REST API</a></div>
+          <div><a href="#mcp" class="hover:text-white transition-colors">MCP server</a></div>
+          <div><a href="#config" class="hover:text-white transition-colors">Configuration</a></div>
+        </div>
+      </div>
+      <div>
+        <div class="text-white font-semibold mb-2 text-xs uppercase tracking-widest">Deploy</div>
+        <div class="space-y-1.5">
+          <div><a href="https://github.com/niradler/boxy/blob/main/deploy/helm/boxy/values.yaml" target="_blank" class="hover:text-white transition-colors">Helm values</a></div>
+          <div><a href="#security" class="hover:text-white transition-colors">Security</a></div>
+          <div><a href="https://github.com/niradler/boxy/releases" target="_blank" class="hover:text-white transition-colors">Releases</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="max-w-6xl mx-auto mt-8 pt-6 border-t border-gray-800 text-xs text-gray-600 text-center">
+    MIT License · <a href="https://github.com/niradler/boxy" class="hover:text-gray-400 transition-colors">github.com/niradler/boxy</a>
+  </div>
+</footer>
+
+<script>
+  hljs.highlightAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "boxy.fullname" . }}-ctrl
+  namespace: {{ include "boxy.sandboxNamespace" . }}
+  labels:
+    app: boxy-controller
+spec:
+  serviceName: {{ include "boxy.fullname" . }}-ctrl-headless
+  replicas: {{ .Values.controller.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: boxy-controller
+  template:
+    metadata:
+      labels:
+        app: boxy-controller
+        boxy.dev/managed-by: boxy
+        boxy.dev/controller: "true"
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccount }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+      containers:
+        - name: controller
+          image: {{ include "boxy.image" (dict "root" . "image" .Values.controller.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.controller.port }}
+          env:
+            - name: BOXY_CONTROLLER_PORT
+              value: {{ .Values.controller.port | quote }}
+            - name: BOXY_MAX_SANDBOXES
+              value: {{ .Values.controller.maxSandboxes | quote }}
+            - name: BOXY_MAX_EXEC_CONCURRENCY
+              value: {{ .Values.controller.maxExecConcurrency | default 50 | quote }}
+            - name: BOXY_MAX_OUTPUT_BYTES
+              value: {{ .Values.controller.maxOutputBytes | default 6291456 | quote }}
+            - name: BOXY_MTLS_DISABLED
+              value: {{ .Values.mtls.disabled | quote }}
+            - name: BOXY_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: controller-token
+            - name: BOXY_TLS_CERT_PATH
+              value: "/tls/tls.crt"
+            - name: BOXY_TLS_KEY_PATH
+              value: "/tls/tls.key"
+            - name: BOXY_TLS_CA_PATH
+              value: "/tls/ca.crt"
+            - name: RUST_LOG
+              value: {{ .Values.controller.logLevel | default "warn" | quote }}
+            - name: BOXY_SANDBOX_PROVIDER
+              value: "nsjail"
+            - name: BOXY_NSJAIL_PATH
+              value: {{ .Values.controller.nsjail.path | default "/usr/sbin/nsjail" | quote }}
+            - name: BOXY_NSJAIL_ROOTFS
+              value: {{ .Values.controller.nsjail.rootfs | default "/rootfs/ubuntu-24.04" | quote }}
+            - name: BOXY_NSJAIL_SANDBOX_ROOT
+              value: "/var/lib/boxy/sandboxes"
+            - name: BOXY_NSJAIL_BINARIES_DIR
+              value: {{ .Values.controller.nsjail.binariesDir | default "/usr/local/bin" | quote }}
+          {{- with .Values.controller.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # SYS_ADMIN: overlayfs mount/umount per sandbox.
+              # SETUID/SETGID: nsjail user mapping.
+              # NET_ADMIN: network namespace setup.
+              # SYS_CHROOT: chroot into overlay merged dir.
+              # MKNOD: create device nodes inside sandbox.
+              # SETPCAP: required by nsjail to set securebits (PR_SET_SECUREBITS).
+              add: ["SYS_ADMIN", "SETUID", "SETGID", "NET_ADMIN", "SYS_CHROOT", "MKNOD", "SETPCAP"]
+          {{- if .Values.mtls.disabled }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- else }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 15
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- end }}
+          volumeMounts:
+            - name: sandbox-root
+              mountPath: /var/lib/boxy/sandboxes
+            {{- if not .Values.mtls.disabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        # Per-sandbox overlayfs dirs are created here.
+        # emptyDir is wiped on pod restart (acceptable since sandbox state is in-memory).
+        - name: sandbox-root
+          emptyDir: {}
+        {{- if not .Values.mtls.disabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "boxy.fullname" . }}-mtls-controller
+        {{- end }}
+      {{- include "boxy.imagePullSecrets" . | nindent 6 }}

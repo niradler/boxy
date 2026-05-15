@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "boxy.fullname" . }}-router
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- if not .Values.router.autoscaling.enabled }}
+  replicas: {{ .Values.router.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: boxy-router
+  template:
+    metadata:
+      labels:
+        app: boxy-router
+    spec:
+      serviceAccountName: {{ .Values.router.serviceAccount }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: router
+          image: {{ include "boxy.image" (dict "root" . "image" .Values.router.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BOXY_LISTEN_ADDR
+              value: ":8080"
+            - name: BOXY_AUTH_CACHE_TTL_SECONDS
+              value: {{ .Values.router.auth.cacheTTLSeconds | default 30 | quote }}
+            - name: BOXY_MAX_BODY_BYTES
+              value: {{ .Values.router.maxBodyBytes | default 6291456 | quote }}
+            - name: BOXY_MAX_TIMEOUT_SECONDS
+              value: {{ .Values.router.maxTimeoutSeconds | default 3600 | quote }}
+            - name: BOXY_MAX_SANDBOX_TTL_SECONDS
+              value: {{ .Values.router.maxSandboxTTLSeconds | default 86400 | quote }}
+            - name: BOXY_MAX_ARGS
+              value: {{ .Values.router.maxArgs | default 256 | quote }}
+            - name: BOXY_MAX_ENV_KEYS
+              value: {{ .Values.router.maxEnvKeys | default 64 | quote }}
+            - name: BOXY_MAX_CONCURRENCY
+              value: {{ .Values.router.maxConcurrency | default 100 | quote }}
+            {{- if .Values.router.auth.staticToken }}
+            - name: BOXY_ROUTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: router-token
+            {{- end }}
+            - name: BOXY_SANDBOX_NAMESPACE
+              value: {{ include "boxy.sandboxNamespace" . | quote }}
+            - name: BOXY_CONTROLLER_PORT
+              value: {{ .Values.controller.port | quote }}
+            - name: BOXY_MTLS_DISABLED
+              value: {{ .Values.mtls.disabled | quote }}
+            - name: BOXY_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "boxy.fullname" . }}-tokens
+                  key: controller-token
+            - name: BOXY_TLS_CA_PATH
+              value: "/tls/ca.crt"
+            - name: BOXY_TLS_CLIENT_CERT_PATH
+              value: "/tls/tls.crt"
+            - name: BOXY_TLS_CLIENT_KEY_PATH
+              value: "/tls/tls.key"
+            - name: BOXY_DEFAULT_SANDBOX_ENABLED
+              value: {{ .Values.router.defaultSandbox.enabled | quote }}
+            {{- if .Values.router.defaultSandbox.enabled }}
+            - name: BOXY_DEFAULT_SANDBOX_CONFIG
+              value: {{
+                dict
+                  "sessionId"       "default-box"
+                  "sandboxId"       .Values.router.defaultSandbox.sandboxId
+                  "owner"           .Values.router.defaultSandbox.owner
+                  "ttlSeconds"      .Values.router.defaultSandbox.ttlSeconds
+                  "env"             .Values.router.defaultSandbox.env
+                  "allowedBinaries" .Values.router.defaultSandbox.allowedBinaries
+                  "vm"              .Values.router.defaultSandbox.vm
+                  "network"         .Values.router.defaultSandbox.network
+                  "volumes"         .Values.router.defaultSandbox.volumes
+                  "patches"         .Values.router.defaultSandbox.patches
+                | toJson | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.router.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if not .Values.mtls.disabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if not .Values.mtls.disabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "boxy.fullname" . }}-mtls-router
+        {{- end }}
+      {{- include "boxy.imagePullSecrets" . | nindent 6 }}
