@@ -54,6 +54,15 @@ helm upgrade --install "${RELEASE_NAME}" ./deploy/helm/boxy \
   --set router.defaultSandbox.enabled=false \
   --kube-context "${CTX}"
 
+# Force a restart so pods pick up the freshly loaded images even when the
+# tag is unchanged (Kubernetes does not restart pods when only the image
+# content behind an existing tag is replaced).
+echo ">>> Restarting deployments to pick up new images"
+kubectl --context "${CTX}" -n "${NAMESPACE}" rollout restart \
+  deployment/${RELEASE_NAME}-router \
+  deployment/${RELEASE_NAME}-operator \
+  statefulset/${RELEASE_NAME}-ctrl 2>/dev/null || true
+
 # -----------------------------------------------------------------------
 # 5. Wait for rollout
 # -----------------------------------------------------------------------

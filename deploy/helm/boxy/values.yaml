@@ -35,6 +35,14 @@ router:
     # Seconds to cache a validated K8s SA token before re-calling TokenReview.
     cacheTTLSeconds: 30
 
+  # Request / response limits.
+  maxBodyBytes: 6291456        # 6 MiB — max size of an inbound request body
+  maxTimeoutSeconds: 3600      # max exec timeoutSeconds a caller may request
+  maxSandboxTTLSeconds: 86400  # max ttlSeconds allowed when creating a sandbox
+  maxArgs: 256                 # max number of args in an exec request
+  maxEnvKeys: 64               # max number of env keys in an exec request
+  maxConcurrency: 100          # max parallel in-flight exec/MCP requests
+
   resources:
     requests:
       cpu: 50m
@@ -52,9 +60,9 @@ router:
     owner: "system"
     ttlSeconds: 86400
     env: {}
-    allowedBinaries: ["curl"]
+    allowedBinaries: []
     vm:
-      memoryMb: 512
+      memoryMb: 0
       vcpus: 1
       workdir: "/workspace"
       shell: "/bin/bash"
@@ -74,6 +82,8 @@ controller:
   port: 8080
   replicas: 1
   maxSandboxes: 20
+  maxExecConcurrency: 50   # max parallel exec calls a single controller pod handles
+  maxOutputBytes: 6291456  # 6 MiB — truncate stdout/stderr above this size
   serviceAccount: boxy-controller
   logLevel: "warn" # off | error | warn | info | debug | trace
 

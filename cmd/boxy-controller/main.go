@@ -18,23 +18,27 @@ import (
 )
 
 type config struct {
-	port          int
-	mtlsDisabled  bool
-	tlsCertPath   string
-	tlsKeyPath    string
-	tlsCAPath     string
-	maxSandboxes  int
-	adapterConfig nsjail.AdapterConfig
+	port               int
+	mtlsDisabled       bool
+	tlsCertPath        string
+	tlsKeyPath         string
+	tlsCAPath          string
+	maxSandboxes       int
+	maxExecConcurrency int
+	maxOutputBytes     int
+	adapterConfig      nsjail.AdapterConfig
 }
 
 func configFromEnv() (*config, error) {
 	cfg := &config{
-		port:         envInt("BOXY_CONTROLLER_PORT", 8080),
-		mtlsDisabled: envBool("BOXY_MTLS_DISABLED", false),
-		tlsCertPath:  envStr("BOXY_TLS_CERT_PATH", "/tls/tls.crt"),
-		tlsKeyPath:   envStr("BOXY_TLS_KEY_PATH", "/tls/tls.key"),
-		tlsCAPath:    envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
-		maxSandboxes: envInt("BOXY_MAX_SANDBOXES", 20),
+		port:               envInt("BOXY_CONTROLLER_PORT", 8080),
+		mtlsDisabled:       envBool("BOXY_MTLS_DISABLED", false),
+		tlsCertPath:        envStr("BOXY_TLS_CERT_PATH", "/tls/tls.crt"),
+		tlsKeyPath:         envStr("BOXY_TLS_KEY_PATH", "/tls/tls.key"),
+		tlsCAPath:          envStr("BOXY_TLS_CA_PATH", "/tls/ca.crt"),
+		maxSandboxes:       envInt("BOXY_MAX_SANDBOXES", 20),
+		maxExecConcurrency: envInt("BOXY_MAX_EXEC_CONCURRENCY", 50),
+		maxOutputBytes:     envInt("BOXY_MAX_OUTPUT_BYTES", 6<<20),
 		adapterConfig: nsjail.AdapterConfig{
 			NsjailPath:    envStr("BOXY_NSJAIL_PATH", "/usr/sbin/nsjail"),
 			DefaultRootfs: envStr("BOXY_NSJAIL_ROOTFS", "/rootfs/ubuntu-24.04"),

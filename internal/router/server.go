@@ -95,8 +95,8 @@ func ConfigFromEnv() (*Config, error) {
 		DevToken:          strings.TrimSpace(os.Getenv("BOXY_ROUTER_TOKEN")), // optional static bypass
 		AuthCacheTTL:      cacheTTL,
 		SandboxNamespace:  ns,
-		MaxBodyBytes:      envInt("BOXY_MAX_BODY_BYTES", 1<<20),
-		MaxOutputBytes:    envInt("BOXY_MAX_OUTPUT_BYTES", 2<<20),
+		MaxBodyBytes:      envInt("BOXY_MAX_BODY_BYTES", 6<<20),
+		MaxOutputBytes:    envInt("BOXY_MAX_OUTPUT_BYTES", 6<<20),
 		MaxTimeoutSec:     envInt("BOXY_MAX_TIMEOUT_SECONDS", 3600),
 		MaxArgs:           envInt("BOXY_MAX_ARGS", 256),
 		MaxEnvKeys:        envInt("BOXY_MAX_ENV_KEYS", 64),

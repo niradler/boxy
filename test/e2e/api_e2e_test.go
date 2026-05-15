@@ -232,6 +232,119 @@ func TestMCPBashTool(t *testing.T) {
 	_, _ = httpClient().Do(delReq)
 }
 
+// TestMCPCrossSandboxIsolation verifies that the MCP bash tool cannot read
+// files written in a different sandbox's workspace, even when both sandboxes
+// are accessible with the same auth token.
+func TestMCPCrossSandboxIsolation(t *testing.T) {
+	base, tok := testCreds(t)
+
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sbA := api.SandboxCreateBody{
+		SessionID: "e2e-mcp-iso", SandboxID: "e2e-mcp-iso-a-" + ts,
+		Owner: "e2e", TTLSeconds: 600,
+	}
+	sbB := api.SandboxCreateBody{
+		SessionID: "e2e-mcp-iso", SandboxID: "e2e-mcp-iso-b-" + ts,
+		Owner: "e2e", TTLSeconds: 600,
+	}
+
+	createSandbox := func(body api.SandboxCreateBody) api.SandboxResponseBody {
+		t.Helper()
+		payload, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := httpClient().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusOK {
+			t.Fatalf("create status %d", res.StatusCode)
+		}
+		var sb api.SandboxResponseBody
+		_ = json.NewDecoder(res.Body).Decode(&sb)
+		return sb
+	}
+
+	sbARet := createSandbox(sbA)
+	sbBRet := createSandbox(sbB)
+	waitReady(t, base, tok, sbARet)
+	waitReady(t, base, tok, sbBRet)
+
+	// Sandbox A writes a secret file via MCP.
+	writeResp := postMCP(t, base, tok, jsonRPCRequest{
+		Jsonrpc: "2.0", ID: 1, Method: "tools/call",
+		Params: map[string]any{
+			"name":      "bash",
+			"arguments": map[string]any{"command": "echo cross-sandbox-secret > /workspace/secret.txt && echo ok"},
+		},
+	}, sbA.SandboxID)
+	if writeResp.Error != nil {
+		t.Fatalf("write via MCP error: %s", writeResp.Error.Message)
+	}
+	if !bytes.Contains(writeResp.Result, []byte("ok")) {
+		t.Fatalf("unexpected write result: %s", writeResp.Result)
+	}
+
+	// Sandbox B tries to read Sandbox A's file via MCP — must not see it.
+	readResp := postMCP(t, base, tok, jsonRPCRequest{
+		Jsonrpc: "2.0", ID: 2, Method: "tools/call",
+		Params: map[string]any{
+			"name":      "bash",
+			"arguments": map[string]any{"command": "cat /workspace/secret.txt 2>/dev/null || echo absent"},
+		},
+	}, sbB.SandboxID)
+	if readResp.Error != nil {
+		t.Fatalf("read via MCP error: %s", readResp.Error.Message)
+	}
+
+	// Parse the tool result content.
+	var toolRes struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(readResp.Result, &toolRes); err != nil {
+		t.Fatalf("parse tool result: %v", err)
+	}
+	got := ""
+	if len(toolRes.Content) > 0 {
+		got = strings.TrimSpace(toolRes.Content[0].Text)
+	}
+	if got != "absent" {
+		t.Fatalf("cross-sandbox isolation FAILED: sandbox B read sandbox A's file, got %q", got)
+	}
+
+	// Invalid sandbox ID must return a tool-level error (not HTTP 500).
+	noSuchResp := postMCP(t, base, tok, jsonRPCRequest{
+		Jsonrpc: "2.0", ID: 3, Method: "tools/call",
+		Params: map[string]any{
+			"name":      "bash",
+			"arguments": map[string]any{"command": "echo hi"},
+		},
+	}, "sandbox-does-not-exist")
+	if noSuchResp.Error != nil {
+		t.Fatalf("expected tool-level error, got rpc error: %s", noSuchResp.Error.Message)
+	}
+	var noSuchTool struct {
+		IsError bool `json:"isError"`
+	}
+	_ = json.Unmarshal(noSuchResp.Result, &noSuchTool)
+	if !noSuchTool.IsError {
+		t.Fatal("expected tool-level error for non-existent sandbox, got success")
+	}
+
+	// Cleanup.
+	for _, id := range []string{sbA.SandboxID, sbB.SandboxID} {
+		delReq, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+id, nil)
+		delReq.Header.Set("Authorization", "Bearer "+tok)
+		_, _ = httpClient().Do(delReq)
+	}
+}
+
 func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.ExecResponseBody {
 	t.Helper()
 	payload, _ := json.Marshal(body)

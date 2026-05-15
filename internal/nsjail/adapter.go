@@ -212,6 +212,11 @@ func (a *NsjailAdapter) Count() int {
 // buildNsjailConfig constructs a NsjailConfig for a single exec invocation.
 // It merges sandbox-level settings with per-exec env and timeout.
 func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv map[string]string, timeoutSecs int) *NsjailConfig {
+	// Processes run as uid 0 inside nsjail. Running as a non-root uid requires
+	// either user namespaces (blocked by Docker Desktop / most container runtimes)
+	// or setuid-via-uidmap (nsjail calls setuid before mount setup, so the child
+	// can't create dirs in the root-owned /run/user/nsjail.*.root temp tree).
+	// Security boundary is enforced by mount, PID, and network namespace isolation.
 	cfg := &NsjailConfig{
 		Mode:                ModeOnce,
 		Log:                 "/dev/null",
@@ -281,6 +286,13 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 	cfg.Mounts = append(cfg.Mounts,
 		MountPt{Src: sb.workspace, Dst: "/workspace", Rw: true, IsBind: true},
 		MountPt{Dst: "/tmp", Fstype: "tmpfs", Rw: true},
+		// Bind essential device files from the host. The ubuntu rootfs /dev/ is
+		// empty when used as a bind-mount pivot root; nsjail creates the
+		// destination file automatically when is_bind: true and dst is absent.
+		MountPt{Src: "/dev/null", Dst: "/dev/null", Rw: true, IsBind: true},
+		MountPt{Src: "/dev/zero", Dst: "/dev/zero", IsBind: true},
+		MountPt{Src: "/dev/urandom", Dst: "/dev/urandom", IsBind: true},
+		MountPt{Src: "/dev/random", Dst: "/dev/random", IsBind: true},
 	)
 
 	// Sandbox volumes.

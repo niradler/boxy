@@ -89,8 +89,7 @@ func (c NsjailConfig) ToTextProto() string {
 		b.WriteString("mode: ONCE\n")
 	}
 
-	fmt.Fprintf(&b, "log: %s\n", protoString(c.Log))
-	fmt.Fprintf(&b, "chroot: %s\n", protoString(c.Chroot))
+	fmt.Fprintf(&b, "log_file: %s\n", protoString(c.Log))
 
 	if c.Hostname != "" {
 		fmt.Fprintf(&b, "hostname: %s\n", protoString(c.Hostname))
@@ -101,11 +100,13 @@ func (c NsjailConfig) ToTextProto() string {
 	if c.TimeLimit > 0 {
 		fmt.Fprintf(&b, "time_limit: %d\n", c.TimeLimit)
 	}
+	// clone_newuser/clone_newnet default to true in nsjail's proto.
+	// Emit false only when explicitly disabled.
 	if c.DisableCloneNewUser {
-		b.WriteString("disable_clone_newuser: true\n")
+		b.WriteString("clone_newuser: false\n")
 	}
 	if c.DisableCloneNewNet {
-		b.WriteString("disable_clone_newnet: true\n")
+		b.WriteString("clone_newnet: false\n")
 	}
 	if c.CloneNewTime {
 		b.WriteString("clone_newtime: true\n")
@@ -141,6 +142,15 @@ func (c NsjailConfig) ToTextProto() string {
 	}
 	for _, e := range c.Envar {
 		fmt.Fprintf(&b, "envar: %s\n", protoString(e))
+	}
+	// Rootfs bind mount must be first so nsjail pivots into it before
+	// applying subsequent mounts (workspace, tmpfs, volumes).
+	if c.Chroot != "" {
+		b.WriteString("mount {\n")
+		fmt.Fprintf(&b, "  src: %s\n", protoString(c.Chroot))
+		b.WriteString("  dst: \"/\"\n")
+		b.WriteString("  is_bind: true\n")
+		b.WriteString("}\n")
 	}
 	for _, m := range c.Mounts {
 		b.WriteString("mount {\n")

@@ -19,10 +19,14 @@ func TestToTextProto_RequiredFields(t *testing.T) {
 	proto := baseConfig().ToTextProto()
 	for _, want := range []string{
 		"mode: ONCE",
-		`chroot: "/rootfs/ubuntu-24.04"`,
-		`log: "/dev/null"`,
-		"disable_clone_newuser: true",
-		"disable_clone_newnet: true",
+		// Chroot becomes a bind mount to "/" — the src is the rootfs path.
+		`src: "/rootfs/ubuntu-24.04"`,
+		`dst: "/"`,
+		"is_bind: true",
+		`log_file: "/dev/null"`,
+		// DisableCloneNewUser/Net map to clone_*: false in the new proto.
+		"clone_newuser: false",
+		"clone_newnet: false",
 	} {
 		if !strings.Contains(proto, want) {
 			t.Errorf("missing %q in:\n%s", want, proto)
@@ -90,8 +94,13 @@ func TestToTextProto_TmpfsMount(t *testing.T) {
 	if !strings.Contains(proto, `fstype: "tmpfs"`) {
 		t.Errorf("missing fstype in:\n%s", proto)
 	}
-	if strings.Contains(proto, "is_bind: true") {
-		t.Errorf("unexpected is_bind in tmpfs mount:\n%s", proto)
+	// Check that the tmpfs mount block itself doesn't contain is_bind.
+	// (The rootfs bind mount added by Chroot does contain is_bind: true, so we
+	// cannot check the whole proto — only the block that has fstype: "tmpfs".)
+	for _, block := range strings.Split(proto, "mount {") {
+		if strings.Contains(block, `fstype: "tmpfs"`) && strings.Contains(block, "is_bind: true") {
+			t.Errorf("unexpected is_bind in tmpfs mount block:\n%s", block)
+		}
 	}
 }
 

@@ -5,3 +5,4 @@
 .env
 .DS_Store
 .claude/docs
+.claude/settings.json

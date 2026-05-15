@@ -58,12 +58,23 @@ type listSandboxesResp struct {
 }
 
 type server struct {
-	cfg     *config
-	adapter nsjail.Adapter
+	cfg            *config
+	adapter        nsjail.Adapter
+	execSem        chan struct{}
+	maxOutputBytes int
 }
 
 func newServer(cfg *config, adapter nsjail.Adapter) *server {
-	return &server{cfg: cfg, adapter: adapter}
+	concurrency := cfg.maxExecConcurrency
+	if concurrency <= 0 {
+		concurrency = 50
+	}
+	return &server{
+		cfg:            cfg,
+		adapter:        adapter,
+		execSem:        make(chan struct{}, concurrency),
+		maxOutputBytes: cfg.maxOutputBytes,
+	}
 }
 
 func (s *server) handler() http.Handler {
@@ -161,9 +172,20 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		req.TimeoutSeconds = 30
 	}
 
+	select {
+	case s.execSem <- struct{}{}:
+		defer func() { <-s.execSem }()
+	default:
+		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutSeconds+5)*time.Second)
 	defer cancel()
 
+	// TODO: support streaming output (chunked/SSE) so callers see output as it arrives
+	// instead of waiting for the command to complete. Requires a streaming exec protocol
+	// between the controller and router.
 	result, err := s.adapter.Exec(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds)
 	if err != nil {
 		code, msg := adapterErrToHTTP(err)
@@ -174,11 +196,23 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("exec", "sandbox", req.SandboxID, "cmd", req.Command, "exit", result.ExitCode)
 
 	writeJSON(w, http.StatusOK, execResp{
-		Stdout:   result.Stdout,
-		Stderr:   result.Stderr,
+		Stdout:   s.truncateOutput(result.Stdout),
+		Stderr:   s.truncateOutput(result.Stderr),
 		ExitCode: result.ExitCode,
 		TimedOut: result.TimedOut,
 	})
+}
+
+func (s *server) truncateOutput(out string) string {
+	if s.maxOutputBytes <= 0 || len(out) <= s.maxOutputBytes {
+		return out
+	}
+	const notice = "\n[output truncated]"
+	cut := s.maxOutputBytes - len(notice)
+	if cut < 0 {
+		cut = 0
+	}
+	return out[:cut] + notice
 }
 
 func adapterErrToHTTP(err error) (int, string) {

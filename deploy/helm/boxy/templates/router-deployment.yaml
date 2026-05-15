@@ -42,6 +42,18 @@ spec:
               value: ":8080"
             - name: BOXY_AUTH_CACHE_TTL_SECONDS
               value: {{ .Values.router.auth.cacheTTLSeconds | default 30 | quote }}
+            - name: BOXY_MAX_BODY_BYTES
+              value: {{ .Values.router.maxBodyBytes | default 6291456 | quote }}
+            - name: BOXY_MAX_TIMEOUT_SECONDS
+              value: {{ .Values.router.maxTimeoutSeconds | default 3600 | quote }}
+            - name: BOXY_MAX_SANDBOX_TTL_SECONDS
+              value: {{ .Values.router.maxSandboxTTLSeconds | default 86400 | quote }}
+            - name: BOXY_MAX_ARGS
+              value: {{ .Values.router.maxArgs | default 256 | quote }}
+            - name: BOXY_MAX_ENV_KEYS
+              value: {{ .Values.router.maxEnvKeys | default 64 | quote }}
+            - name: BOXY_MAX_CONCURRENCY
+              value: {{ .Values.router.maxConcurrency | default 100 | quote }}
             {{- if .Values.router.auth.staticToken }}
             - name: BOXY_ROUTER_TOKEN
               valueFrom:
