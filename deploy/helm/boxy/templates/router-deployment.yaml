@@ -84,9 +84,7 @@ spec:
             - name: BOXY_DEFAULT_SANDBOX_CONFIG
               value: {{
                 dict
-                  "sessionId"       "default-box"
                   "sandboxId"       .Values.router.defaultSandbox.sandboxId
-                  "owner"           .Values.router.defaultSandbox.owner
                   "ttlSeconds"      .Values.router.defaultSandbox.ttlSeconds
                   "env"             .Values.router.defaultSandbox.env
                   "allowedBinaries" .Values.router.defaultSandbox.allowedBinaries

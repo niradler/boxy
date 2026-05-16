@@ -1,14 +1,9 @@
 package api
 
-type PodRef struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	UID       string `json:"uid"`
-}
-
 type ExecRequestBody struct {
-	SessionID      string            `json:"sessionId"`
 	SandboxID      string            `json:"sandboxId"`
+	SessionID      string            `json:"sessionId,omitempty"`
+	Owner          string            `json:"owner,omitempty"`
 	Command        string            `json:"command"`
 	Args           []string          `json:"args"`
 	Env            map[string]string `json:"env"`
@@ -128,9 +123,7 @@ type SandboxPatch struct {
 }
 
 type SandboxCreateBody struct {
-	SessionID       string                `json:"sessionId"`
 	SandboxID       string                `json:"sandboxId"`
-	Owner           string                `json:"owner"`
 	TTLSeconds      int                   `json:"ttlSeconds,omitempty"`
 	Env             map[string]string     `json:"env,omitempty"`
 	AllowedBinaries []string              `json:"allowedBinaries,omitempty"`
@@ -140,17 +133,46 @@ type SandboxCreateBody struct {
 	Patches         []SandboxPatch        `json:"patches,omitempty"`
 }
 
-type SandboxResponseBody struct {
-	SandboxID string `json:"sandboxId"`
-	SessionID string `json:"sessionId"`
-	Owner     string `json:"owner"`
-	Runtime   string `json:"runtime"`
-	PodRef    PodRef `json:"podRef"`
-	Phase     string `json:"phase"`
-	Ready     bool   `json:"ready"`
-}
-
 type ErrorBody struct {
 	Error string `json:"error"`
 	Code  string `json:"code,omitempty"`
+}
+
+type SessionCreateBody struct {
+	SandboxID string `json:"sandboxId"`
+	SessionID string `json:"sessionId,omitempty"`
+	Owner     string `json:"owner,omitempty"`
+}
+
+type SessionResponseBody struct {
+	SessionID         string `json:"sessionId"`
+	SandboxID         string `json:"sandboxId"`
+	Owner             string `json:"owner,omitempty"`
+	Phase             string `json:"phase"`
+	Ready             bool   `json:"ready"`
+	ControllerPod     string `json:"controllerPod,omitempty"`
+	ControllerAddress string `json:"controllerAddress,omitempty"`
+	Port              int32  `json:"port,omitempty"`
+	CreatedAt         string `json:"createdAt,omitempty"`
+	ExpiresAt         string `json:"expiresAt,omitempty"`
+	LastExecAt        string `json:"lastExecAt,omitempty"`
+}
+
+type SessionListResponse struct {
+	Sessions []SessionResponseBody `json:"sessions"`
+}
+
+type SandboxConfigResponse struct {
+	SandboxID      string `json:"sandboxId"`
+	TTLSeconds     int    `json:"ttlSeconds,omitempty"`
+	ActiveSessions int    `json:"activeSessions"`
+}
+
+type SandboxConfigListResponse struct {
+	Sandboxes []SandboxConfigResponse `json:"sandboxes"`
+}
+
+type SandboxEvictResponse struct {
+	EvictedSessions int    `json:"evictedSessions"`
+	Message         string `json:"message"`
 }

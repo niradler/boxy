@@ -37,6 +37,7 @@
       <a href="#api"          class="hover:text-blue-600 transition-colors">API</a>
       <a href="#mcp"          class="hover:text-blue-600 transition-colors">MCP</a>
       <a href="#config"       class="hover:text-blue-600 transition-colors">Config</a>
+      <a href="#crds"         class="hover:text-blue-600 transition-colors">CRDs</a>
       <a href="#security"     class="hover:text-blue-600 transition-colors">Security</a>
       <a href="https://github.com/niradler/boxy" target="_blank"
          class="bg-gray-900 text-white px-3 py-1.5 rounded-md hover:bg-gray-700 transition-colors text-xs font-medium">
@@ -324,17 +325,17 @@
           Execute command
         </h3>
         <div class="flow-col">
-          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>POST /v1/exec {sandboxId, command, args, timeoutSeconds}</div>
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>POST /v1/sessions/exec {sandboxId, sessionId, command, args, timeoutSeconds}</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>Reads Sandbox CR · resolves controllerAddress</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>Reads Session CR · resolves controllerAddress</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>POST /v1/exec over mTLS → boxy-controller</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>POST controller /v1/exec over mTLS → boxy-controller</div>
           <div class="flow-arrow">↓</div>
           <div class="flow-step"><span class="font-semibold text-green-600 text-xs">boxy-controller</span><br>Builds NsjailConfig proto · writes to temp file · spawns nsjail process</div>
           <div class="flow-arrow">↓</div>
           <div class="flow-step"><span class="font-semibold text-amber-600 text-xs">nsjail sandbox</span><br>Executes command · captures stdout/stderr · exits (or SIGKILLed on timeout)</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>← 200 {exitCode, stdout, stderr, timedOut}</div>
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>← 200 {exitCode, stdout, stderr, timedOut} + X-Boxy-Session-Id</div>
         </div>
         <p class="text-xs text-gray-400 mt-4">Router also updates <code class="bg-gray-100 px-1 rounded">lastExecAt</code> on the CR to slide the TTL window.</p>
       </div>
@@ -371,19 +372,25 @@ export BASE=http://&lt;router-service&gt;:8080</code></pre>
         <pre><code class="language-bash rounded-xl">curl -sS \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"sessionId":"demo","sandboxId":"demo-1",
-       "owner":"you","ttlSeconds":3600}' \
+  -d '{"sandboxId":"demo-1","ttlSeconds":3600}' \
   $BASE/v1/sandboxes | jq .</code></pre>
       </div>
       <div>
-        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">4 · Execute a command</h3>
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">4 · Create and exec</h3>
         <pre><code class="language-bash rounded-xl">curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo","sandboxId":"demo-1",
+       "owner":"you"}' \
+  $BASE/v1/sessions | jq .
+
+curl -sS \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"demo","sandboxId":"demo-1",
        "command":"sh","args":["-c","echo hello"],
        "timeoutSeconds":30}' \
-  $BASE/v1/exec | jq .
+  $BASE/v1/sessions/exec | jq .
 
 # Response:
 # { "exitCode": 0, "stdout": "hello\n",
@@ -415,22 +422,27 @@ export BASE=http://&lt;router-service&gt;:8080</code></pre>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
             <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes</td>
-            <td class="px-5 py-3 text-gray-600">Create a sandbox. Returns <code class="bg-gray-100 px-1 rounded text-xs">201</code> when Running</td>
+              <td class="px-5 py-3 text-gray-600">Create a sandbox config. Returns <code class="bg-gray-100 px-1 rounded text-xs">201</code></td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-green-100 text-green-700 px-2 py-0.5 rounded font-mono text-xs font-bold">GET</span></td>
             <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes/{sandboxId}</td>
-            <td class="px-5 py-3 text-gray-600">Get sandbox status and metadata</td>
+            <td class="px-5 py-3 text-gray-600">Get sandbox config metadata and active sessions</td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-red-100 text-red-700 px-2 py-0.5 rounded font-mono text-xs font-bold">DELETE</span></td>
             <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes/{sandboxId}</td>
-            <td class="px-5 py-3 text-gray-600">Delete sandbox and remove its CR</td>
+            <td class="px-5 py-3 text-gray-600">Delete sandbox config after sessions terminate</td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
-            <td class="px-5 py-3 font-mono text-xs">/v1/exec</td>
-            <td class="px-5 py-3 text-gray-600">Execute a command in an existing sandbox</td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sessions</td>
+            <td class="px-5 py-3 text-gray-600">Create a running session from a sandbox config</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sessions/exec</td>
+            <td class="px-5 py-3 text-gray-600">Execute a command in a session</td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
@@ -467,7 +479,7 @@ export BASE=http://&lt;router-service&gt;:8080</code></pre>
         </div>
       </div>
       <div>
-        <h3 class="font-bold text-base mb-3">POST /v1/exec - request body</h3>
+        <h3 class="font-bold text-base mb-3">POST /v1/sessions/exec - request body</h3>
         <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
           <table class="w-full text-xs">
             <thead class="bg-gray-50 border-b border-gray-100">
@@ -647,6 +659,165 @@ curl -sS \
     </div>
   </div>
 </section>
+<section id="crds" class="py-16 px-4 bg-white border-t border-gray-100">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-10">
+      <h2 class="text-3xl font-bold mb-3">Custom Resource Definitions</h2>
+      <p class="text-gray-500 max-w-2xl mx-auto text-sm">boxy ships two CRDs in the <code class="bg-gray-100 px-1 rounded">boxy.dev</code> group. All state lives in these CRs; the router and operator are fully stateless. Short names work with kubectl (<code class="bg-gray-100 px-1 rounded">kubectl get sbx</code>, <code class="bg-gray-100 px-1 rounded">kubectl get cp</code>).</p>
+    </div>
+
+    <!-- Sandbox CRD -->
+    <div class="mb-10">
+      <div class="flex items-center gap-3 mb-5">
+        <div class="w-10 h-10 bg-amber-500 rounded-xl flex items-center justify-center text-white text-base font-bold">S</div>
+        <div>
+          <div class="font-bold text-gray-900 text-lg">Sandbox <span class="text-gray-400 font-normal text-sm">sandboxes.boxy.dev / v1alpha1</span></div>
+          <div class="text-xs text-gray-500 font-mono">group: boxy.dev · scope: Namespaced · shortName: sbx</div>
+        </div>
+      </div>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">spec fields</h3>
+          <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+            <table class="w-full text-xs">
+              <thead class="bg-amber-50 border-b border-amber-100">
+                <tr>
+                  <th class="text-left px-4 py-2.5 font-semibold text-amber-800">Field</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-amber-800">Type</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-amber-800">Notes</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="px-4 py-2 font-mono text-blue-700">sandboxId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required. 1–63 chars</td></tr>
+                <tr><td class="px-4 py-2 font-mono">ttlSeconds</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">0–604800. Sliding TTL window</td></tr>
+                <tr><td class="px-4 py-2 font-mono">env</td><td class="px-4 py-2">map&lt;string&gt;</td><td class="px-4 py-2 text-gray-500">BOXY_* / KUBERNETES_* reserved</td></tr>
+                <tr><td class="px-4 py-2 font-mono">allowedBinaries</td><td class="px-4 py-2">string[]</td><td class="px-4 py-2 text-gray-500">Bind-mount whitelist</td></tr>
+                <tr><td class="px-4 py-2 font-mono">vm.memoryMb</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">64–65536 MB cgroup cap</td></tr>
+                <tr><td class="px-4 py-2 font-mono">vm.vcpus</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">1–64</td></tr>
+                <tr><td class="px-4 py-2 font-mono">vm.maxDurationSec</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">Hard nsjail time_limit</td></tr>
+                <tr><td class="px-4 py-2 font-mono">vm.idleTimeoutSec</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">Idle kill timeout</td></tr>
+                <tr><td class="px-4 py-2 font-mono">vm.rlimits</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{resource, soft, hard}</td></tr>
+                <tr><td class="px-4 py-2 font-mono">vm.scripts</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{name, content} init scripts</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.enabled</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Enable network namespace</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.allowInternetAccess</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Disable network NS isolation</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.rules</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">ingress/egress allow/deny rules</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.ports</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{hostPort, guestPort, protocol}</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.dns</td><td class="px-4 py-2">object</td><td class="px-4 py-2 text-gray-500">nameservers, rebindProtection, queryTimeoutMs</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.secrets</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{envVar, value, allowedHosts[]}</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.maxConnections</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">Max outbound connections</td></tr>
+                <tr><td class="px-4 py-2 font-mono">network.trustHostCAs</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Mount host CA bundle</td></tr>
+                <tr><td class="px-4 py-2 font-mono">volumes</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{guestPath, type, hostPath, sizeMb, readonly}</td></tr>
+                <tr><td class="px-4 py-2 font-mono">patches</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{type, path, content, bytes, hostPath, mode, replace}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">status fields</h3>
+          <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm mb-5">
+            <table class="w-full text-xs">
+              <thead class="bg-amber-50 border-b border-amber-100">
+                <tr>
+                  <th class="text-left px-4 py-2.5 font-semibold text-amber-800">Field</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-amber-800">Type</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-amber-800">Notes</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="px-4 py-2 font-mono">phase</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Pending · Creating · Running · Deleting · Terminated</td></tr>
+                <tr><td class="px-4 py-2 font-mono">controllerPool</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Assigned ControllerPool name</td></tr>
+                <tr><td class="px-4 py-2 font-mono">controllerPod</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Assigned controller pod name</td></tr>
+                <tr><td class="px-4 py-2 font-mono">controllerAddress</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">mTLS dial address for the router</td></tr>
+                <tr><td class="px-4 py-2 font-mono">port</td><td class="px-4 py-2">int32</td><td class="px-4 py-2 text-gray-500">Listening port on controller</td></tr>
+                <tr><td class="px-4 py-2 font-mono">createdAt</td><td class="px-4 py-2">date-time</td><td class="px-4 py-2 text-gray-500">When sandbox was created</td></tr>
+                <tr><td class="px-4 py-2 font-mono">expiresAt</td><td class="px-4 py-2">date-time</td><td class="px-4 py-2 text-gray-500">Computed TTL expiry</td></tr>
+                <tr><td class="px-4 py-2 font-mono">terminatedAt</td><td class="px-4 py-2">date-time</td><td class="px-4 py-2 text-gray-500">When sandbox terminated</td></tr>
+                <tr><td class="px-4 py-2 font-mono">lastExecAt</td><td class="px-4 py-2">date-time</td><td class="px-4 py-2 text-gray-500">Updated on every exec (slides TTL)</td></tr>
+                <tr><td class="px-4 py-2 font-mono">message</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Human-readable status detail</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">example manifest</h3>
+          <pre><code class="language-yaml rounded-xl">apiVersion: boxy.dev/v1alpha1
+kind: Sandbox
+metadata:
+  name: demo-1
+spec:
+  sandboxId: demo-1
+  ttlSeconds: 3600
+  vm:
+    memoryMb: 512
+    vcpus: 2
+  network:
+    allowInternetAccess: false</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ControllerPool CRD -->
+    <div>
+      <div class="flex items-center gap-3 mb-5">
+        <div class="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center text-white text-base font-bold">CP</div>
+        <div>
+          <div class="font-bold text-gray-900 text-lg">ControllerPool <span class="text-gray-400 font-normal text-sm">controllerpools.boxy.dev / v1alpha1</span></div>
+          <div class="text-xs text-gray-500 font-mono">group: boxy.dev · scope: Namespaced · shortName: cp</div>
+        </div>
+      </div>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">spec fields</h3>
+          <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+            <table class="w-full text-xs">
+              <thead class="bg-green-50 border-b border-green-100">
+                <tr>
+                  <th class="text-left px-4 py-2.5 font-semibold text-green-800">Field</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-green-800">Type</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-green-800">Notes</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="px-4 py-2 font-mono text-blue-700">maxSandboxes*</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">Required. Min 1. Max per controller pod</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-blue-700">maxReplicas*</td><td class="px-4 py-2">int32</td><td class="px-4 py-2 text-gray-500">Required. Min 1. StatefulSet upper bound</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-blue-700">minReplicas*</td><td class="px-4 py-2">int32</td><td class="px-4 py-2 text-gray-500">Required. Min 1. Always-warm floor</td></tr>
+                <tr><td class="px-4 py-2 font-mono">image</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Controller container image override</td></tr>
+                <tr><td class="px-4 py-2 font-mono">preinstalledBinaries</td><td class="px-4 py-2">string[]</td><td class="px-4 py-2 text-gray-500">Binaries available in all sandboxes on this pool</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">status fields</h3>
+          <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm mb-5">
+            <table class="w-full text-xs">
+              <thead class="bg-green-50 border-b border-green-100">
+                <tr>
+                  <th class="text-left px-4 py-2.5 font-semibold text-green-800">Field</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-green-800">Type</th>
+                  <th class="text-left px-4 py-2.5 font-semibold text-green-800">Notes</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="px-4 py-2 font-mono">readyReplicas</td><td class="px-4 py-2">int32</td><td class="px-4 py-2 text-gray-500">Controller pods ready</td></tr>
+                <tr><td class="px-4 py-2 font-mono">activeSandboxCount</td><td class="px-4 py-2">int32</td><td class="px-4 py-2 text-gray-500">Running sandboxes across the pool</td></tr>
+                <tr><td class="px-4 py-2 font-mono">lastScaleTime</td><td class="px-4 py-2">date-time</td><td class="px-4 py-2 text-gray-500">Last autoscale event</td></tr>
+                <tr><td class="px-4 py-2 font-mono">conditions</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{type, status, reason, message, lastTransitionTime}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">example manifest</h3>
+          <pre><code class="language-yaml rounded-xl">apiVersion: boxy.dev/v1alpha1
+kind: ControllerPool
+metadata:
+  name: default
+spec:
+  maxSandboxes: 20
+  minReplicas: 1
+  maxReplicas: 10</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 <section id="security" class="py-16 px-4 bg-gray-50">
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-10">
@@ -763,6 +934,7 @@ curl -sS \
           <div><a href="#api" class="hover:text-white transition-colors">REST API</a></div>
           <div><a href="#mcp" class="hover:text-white transition-colors">MCP server</a></div>
           <div><a href="#config" class="hover:text-white transition-colors">Configuration</a></div>
+          <div><a href="#crds" class="hover:text-white transition-colors">CRDs</a></div>
         </div>
       </div>
       <div>

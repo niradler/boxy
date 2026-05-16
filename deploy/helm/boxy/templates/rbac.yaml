@@ -6,9 +6,12 @@ metadata:
 rules:
   - apiGroups: ["boxy.dev"]
     resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["boxy.dev"]
+    resources: ["sessions"]
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: ["boxy.dev"]
-    resources: ["sandboxes/status"]
+    resources: ["sessions/status"]
     verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -25,8 +28,8 @@ roleRef:
   kind: Role
   name: boxy-router
 ---
-# ClusterRole that grants the router the right to validate bearer tokens via
-# the K8s TokenReview API. Required for SA-token-based authentication.
+# ClusterRole that grants the router the right to validate bearer tokens and
+# ask Kubernetes whether the authenticated subject may access a Boxy resource.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -34,6 +37,9 @@ metadata:
 rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

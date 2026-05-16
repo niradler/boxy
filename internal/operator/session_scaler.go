@@ -14,7 +14,7 @@ import (
 	boxyv1 "boxy.dev/boxy/api/v1alpha1"
 )
 
-func (r *SandboxReconciler) RunScaleDownLoop(ctx context.Context) {
+func (r *SessionReconciler) RunScaleDownLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -29,11 +29,8 @@ func (r *SandboxReconciler) RunScaleDownLoop(ctx context.Context) {
 	}
 }
 
-func (r *SandboxReconciler) tryScaleDown(ctx context.Context) error {
-	key := types.NamespacedName{
-		Namespace: r.cfg.Namespace,
-		Name:      r.cfg.StatefulSetName,
-	}
+func (r *SessionReconciler) tryScaleDown(ctx context.Context) error {
+	key := types.NamespacedName{Namespace: r.cfg.Namespace, Name: r.cfg.StatefulSetName}
 	var sts appsv1.StatefulSet
 	if err := r.Get(ctx, key, &sts); err != nil {
 		return fmt.Errorf("get statefulset: %w", err)
@@ -54,15 +51,15 @@ func (r *SandboxReconciler) tryScaleDown(ctx context.Context) error {
 		return fmt.Errorf("list controller pods: %w", err)
 	}
 
-	var sandboxList boxyv1.SandboxList
-	if err := r.List(ctx, &sandboxList, client.InNamespace(r.cfg.Namespace)); err != nil {
-		return fmt.Errorf("list sandboxes: %w", err)
+	var sessionList boxyv1.SessionList
+	if err := r.List(ctx, &sessionList, client.InNamespace(r.cfg.Namespace)); err != nil {
+		return fmt.Errorf("list sessions: %w", err)
 	}
 
 	podCounts := map[string]int{}
-	for i := range sandboxList.Items {
-		s := &sandboxList.Items[i]
-		if s.Status.Phase == boxyv1.SandboxPhaseTerminated {
+	for i := range sessionList.Items {
+		s := &sessionList.Items[i]
+		if s.Status.Phase == boxyv1.SandboxPhaseTerminated || s.Status.Phase == boxyv1.SandboxPhaseDeleting {
 			continue
 		}
 		if s.Status.ControllerPod != "" {

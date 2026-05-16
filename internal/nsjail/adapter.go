@@ -334,14 +334,13 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		MountPt{Src: "/dev/random", Dst: "/dev/random", IsBind: true},
 	)
 	// When internet access is enabled the sandbox inherits the pod's network namespace,
-	// but the bare Ubuntu rootfs has an empty /etc/resolv.conf. Bind-mount the pod's
-	// resolv.conf so DNS resolution works inside the sandbox.
+	// but the bare Ubuntu rootfs has empty /etc/resolv.conf and no CA bundle.
+	// Bind-mount both from the controller pod so DNS and TLS work inside the sandbox.
 	if sb.req.Network != nil && sb.req.Network.AllowInternetAccess {
-		cfg.Mounts = append(cfg.Mounts, MountPt{
-			Src:    "/etc/resolv.conf",
-			Dst:    "/etc/resolv.conf",
-			IsBind: true,
-		})
+		cfg.Mounts = append(cfg.Mounts,
+			MountPt{Src: "/etc/resolv.conf", Dst: "/etc/resolv.conf", IsBind: true},
+			MountPt{Src: "/etc/ssl/certs/ca-certificates.crt", Dst: "/etc/ssl/certs/ca-certificates.crt", IsBind: true},
+		)
 	}
 
 	for _, vol := range sb.req.Volumes {

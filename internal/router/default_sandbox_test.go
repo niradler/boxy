@@ -23,16 +23,6 @@ func TestEnsureDefaultSandbox_Disabled(t *testing.T) {
 	}
 }
 
-func TestResolveDefaultSandboxID_Disabled(t *testing.T) {
-	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer ctrl.Close()
-	srv := newTestServer(t, ctrl.URL, nil)
-
-	_, err := srv.resolveDefaultSandboxID(context.Background())
-	if err == nil {
-		t.Fatal("expected error when default sandbox disabled")
-	}
-}
 
 func TestEnsureDefaultSandbox_AlreadyExists(t *testing.T) {
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,13 +30,11 @@ func TestEnsureDefaultSandbox_AlreadyExists(t *testing.T) {
 	}))
 	defer ctrl.Close()
 
-	sb := testSandbox("default", "default", "127.0.0.1", 8080, "Running")
+	sb := testSandbox("default", "default")
 	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb}, func(cfg *Config) {
 		cfg.DefaultSandboxEnabled = true
 		cfg.DefaultSandboxConfig = &api.SandboxCreateBody{
 			SandboxID:  "default",
-			SessionID:  "default-box",
-			Owner:      "system",
 			TTLSeconds: 86400,
 		}
 	})

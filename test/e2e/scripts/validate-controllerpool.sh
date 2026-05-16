@@ -3,9 +3,9 @@
 #
 # Covers:
 #   - ControllerPool CR exists and has correct spec.
-#   - activeSandboxCount increments when sandboxes are created.
-#   - activeSandboxCount decrements when sandboxes are deleted.
-#   - Each Sandbox CR has status.controllerPool set.
+#   - activeSandboxCount increments when sessions are created.
+#   - activeSandboxCount decrements when sessions are deleted.
+#   - Each Session CR has status.controllerPool set.
 #   - readyReplicas reflects the StatefulSet.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,26 +65,36 @@ SB_A=$(unique_id)
 SB_B=$(unique_id)
 
 curl_api POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"cp\",\"sandboxId\":\"${SB_A}\",\"owner\":\"e2e\",\"ttlSeconds\":300}" >/dev/null
+  -d "{\"sandboxId\":\"${SB_A}\",\"ttlSeconds\":300}" >/dev/null
 curl_api POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"cp\",\"sandboxId\":\"${SB_B}\",\"owner\":\"e2e\",\"ttlSeconds\":300}" >/dev/null
+  -d "{\"sandboxId\":\"${SB_B}\",\"ttlSeconds\":300}" >/dev/null
 
-wait_sandbox_ready "${SB_A}" 120
-wait_sandbox_ready "${SB_B}" 120
+SESS_A=$(curl_api POST "/v1/sessions" -d "{\"sandboxId\":\"${SB_A}\",\"owner\":\"e2e\"}" | jq -r '.sessionId // empty')
+SESS_B=$(curl_api POST "/v1/sessions" -d "{\"sandboxId\":\"${SB_B}\",\"owner\":\"e2e\"}" | jq -r '.sessionId // empty')
 
-# Allow reconciler to process the Sandbox events
+if [[ -z "${SESS_A}" || -z "${SESS_B}" ]]; then
+  fail "Created controllerpool test sessions" "SESS_A='${SESS_A}' SESS_B='${SESS_B}'"
+else
+  pass "Created controllerpool test sessions"
+fi
+
+wait_session_ready "${SESS_A}" 120
+wait_session_ready "${SESS_B}" 120
+
+# Allow reconciler to process the Session events
 sleep 5
 after_create=$(kctl get controllerpool "${POOL_NAME}" -o jsonpath='{.status.activeSandboxCount}' 2>/dev/null || echo "0")
 expected_create=$((baseline + 2))
-assert_eq "activeSandboxCount increments after creating 2 sandboxes" "${expected_create}" "${after_create}"
+assert_eq "activeSandboxCount increments after creating 2 sessions" "${expected_create}" "${after_create}"
 
-# Delete one sandbox
-curl_api DELETE "/v1/sandboxes/${SB_A}" >/dev/null 2>&1 || true
+# Delete one session
 
-# Wait for the sandbox to reach Terminated and reconciler to update
+curl_api DELETE "/v1/sessions/${SESS_A}" >/dev/null 2>&1 || true
+
+# Wait for the session to terminate/disappear and reconciler to update
 deadline=$((SECONDS + 60))
 while [[ ${SECONDS} -lt ${deadline} ]]; do
-  phase=$(kctl get sandbox -l "boxy.dev/sandbox-id=${SB_A}" -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+  phase=$(kctl get session "${SESS_A}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
   if [[ "${phase}" == "Terminated" || -z "${phase}" ]]; then
     break
   fi
@@ -94,17 +104,17 @@ sleep 5  # let reconciler react
 
 after_delete=$(kctl get controllerpool "${POOL_NAME}" -o jsonpath='{.status.activeSandboxCount}' 2>/dev/null || echo "0")
 expected_delete=$((baseline + 1))
-assert_eq "activeSandboxCount decrements after deleting 1 sandbox" "${expected_delete}" "${after_delete}"
+assert_eq "activeSandboxCount decrements after deleting 1 session" "${expected_delete}" "${after_delete}"
 
 # -----------------------------------------------------------------------
-# Sandbox CR has controllerPool set
+# Session CR has controllerPool set
 # -----------------------------------------------------------------------
 
-suite "Sandbox CR controllerPool Reference"
+suite "Session CR controllerPool Reference"
 
-sb_b_pool=$(kctl get sandbox -l "boxy.dev/sandbox-id=${SB_B}" \
-  -o jsonpath='{.items[0].status.controllerPool}' 2>/dev/null || echo "")
-assert_eq "Sandbox CR status.controllerPool is set" "${POOL_NAME}" "${sb_b_pool}"
+sess_b_pool=$(kctl get session "${SESS_B}" \
+  -o jsonpath='{.status.controllerPool}' 2>/dev/null || echo "")
+assert_eq "Session CR status.controllerPool is set" "${POOL_NAME}" "${sess_b_pool}"
 
 # -----------------------------------------------------------------------
 # ControllerPool Ready condition
@@ -120,6 +130,8 @@ assert_eq "ControllerPool Ready condition is True" "True" "${ready_status}"
 # Cleanup
 # -----------------------------------------------------------------------
 
+curl_api DELETE "/v1/sessions/${SESS_B}" >/dev/null 2>&1 || true
+curl_api DELETE "/v1/sandboxes/${SB_A}" >/dev/null 2>&1 || true
 curl_api DELETE "/v1/sandboxes/${SB_B}" >/dev/null 2>&1 || true
 
 summary

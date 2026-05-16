@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
+	authzv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -76,6 +78,70 @@ func (tr *tokenReviewer) authenticate(ctx context.Context, token string) (*authv
 	tr.mu.Unlock()
 
 	return &rev.Status.User, nil
+}
+
+func (tr *tokenReviewer) authorizeResource(
+	ctx context.Context,
+	user *authv1.UserInfo,
+	namespace string,
+	verb string,
+	resource string,
+	name string,
+) error {
+	if user == nil || user.Username == "" {
+		return fmt.Errorf("missing authenticated user")
+	}
+	if tr.devToken != "" && user.Username == "dev-token" {
+		return nil
+	}
+
+	sar, err := tr.cs.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authzv1.SubjectAccessReview{
+		Spec: authzv1.SubjectAccessReviewSpec{
+			User:   user.Username,
+			UID:    user.UID,
+			Groups: user.Groups,
+			ResourceAttributes: &authzv1.ResourceAttributes{
+				Namespace: namespace,
+				Group:     "boxy.dev",
+				Resource:  resource,
+				Verb:      verb,
+				Name:      name,
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("subjectaccessreview: %w", err)
+	}
+	if !sar.Status.Allowed {
+		reason := sar.Status.Reason
+		if reason == "" {
+			reason = "access denied"
+		}
+		return fmt.Errorf("%s", reason)
+	}
+	return nil
+}
+
+func (s *Server) requireResourceAccess(w http.ResponseWriter, r *http.Request, verb, resource, name string) bool {
+	user, ok := r.Context().Value(authUserKey).(*authv1.UserInfo)
+	if !ok || user == nil {
+		s.jsonErr(w, http.StatusUnauthorized, "unauthorized", "")
+		return false
+	}
+	if err := s.auth.authorizeResource(r.Context(), user, s.cfg.SandboxNamespace, verb, resource, name); err != nil {
+		s.log.Debug("authorization failed", "user", user.Username, "verb", verb, "resource", resource, "name", name, "err", err)
+		s.jsonErr(w, http.StatusForbidden, "forbidden", "authorization")
+		return false
+	}
+	return true
+}
+
+func (s *Server) canResourceAccess(ctx context.Context, verb, resource, name string) error {
+	user, ok := ctx.Value(authUserKey).(*authv1.UserInfo)
+	if !ok || user == nil {
+		return fmt.Errorf("unauthorized")
+	}
+	return s.auth.authorizeResource(ctx, user, s.cfg.SandboxNamespace, verb, resource, name)
 }
 
 // evictLoop removes stale entries; exits when ctx is cancelled.

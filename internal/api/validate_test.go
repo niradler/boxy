@@ -24,13 +24,25 @@ func TestValidateExecRequest(t *testing.T) {
 }
 
 func TestValidateSandboxCreate(t *testing.T) {
-	b := &SandboxCreateBody{SessionID: "s", SandboxID: "x", Owner: "o", TTLSeconds: 10}
+	b := &SandboxCreateBody{SandboxID: "x", TTLSeconds: 10}
 	if err := ValidateSandboxCreate(b, 100); err != nil {
 		t.Fatal(err)
 	}
 	b.TTLSeconds = 200
 	if err := ValidateSandboxCreate(b, 100); err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected error for ttl over max")
+	}
+
+	// sandboxId too long for label-backed selectors
+	b2 := &SandboxCreateBody{SandboxID: strings.Repeat("x", 64), TTLSeconds: 10}
+	if err := ValidateSandboxCreate(b2, 100); err == nil {
+		t.Fatal("expected error for sandboxId > 63 chars")
+	}
+
+	// invalid k8s name format
+	b3 := &SandboxCreateBody{SandboxID: "UPPERCASE", TTLSeconds: 10}
+	if err := ValidateSandboxCreate(b3, 100); err == nil {
+		t.Fatal("expected error for invalid k8s name")
 	}
 }
 
@@ -47,8 +59,8 @@ func TestValidateExecEnvKey(t *testing.T) {
 
 func TestValidateSandboxCreateBlockedEnv(t *testing.T) {
 	b := &SandboxCreateBody{
-		SessionID: "s", SandboxID: "x", Owner: "o",
-		Env: map[string]string{"BOXY_X": "1"},
+		SandboxID: "x",
+		Env:       map[string]string{"BOXY_X": "1"},
 	}
 	if err := ValidateSandboxCreate(b, 100); err == nil {
 		t.Fatal("expected error")

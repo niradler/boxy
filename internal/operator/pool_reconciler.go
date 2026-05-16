@@ -19,8 +19,8 @@ import (
 
 const conditionReady = "Ready"
 
-// ControllerPoolReconciler maintains ControllerPool.status (readyReplicas and
-// activeSandboxCount) by watching both ControllerPool and Sandbox events.
+// ControllerPoolReconciler maintains ControllerPool.status by watching
+// ControllerPool and Session events.
 type ControllerPoolReconciler struct {
 	client.Client
 	cfg ReconcilerConfig
@@ -39,8 +39,8 @@ func (r *ControllerPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&boxyv1.ControllerPool{}).
 		Watches(
-			&boxyv1.Sandbox{},
-			handler.EnqueueRequestsFromMapFunc(r.sandboxToPool),
+			&boxyv1.Session{},
+			handler.EnqueueRequestsFromMapFunc(r.sessionToPool),
 		).
 		Named("controllerpool").
 		Complete(r)
@@ -55,7 +55,7 @@ func (r *ControllerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	active, err := r.countActiveSandboxes(ctx)
+	active, err := r.countActiveSessions(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -75,10 +75,10 @@ func (r *ControllerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *ControllerPoolReconciler) countActiveSandboxes(ctx context.Context) (int32, error) {
-	var list boxyv1.SandboxList
+func (r *ControllerPoolReconciler) countActiveSessions(ctx context.Context) (int32, error) {
+	var list boxyv1.SessionList
 	if err := r.List(ctx, &list, client.InNamespace(r.cfg.Namespace)); err != nil {
-		return 0, fmt.Errorf("list sandboxes: %w", err)
+		return 0, fmt.Errorf("list sessions: %w", err)
 	}
 	var n int32
 	for i := range list.Items {
@@ -139,11 +139,10 @@ func (r *ControllerPoolReconciler) setReadyCondition(pool *boxyv1.ControllerPool
 	pool.Status.Conditions = append(pool.Status.Conditions, updated)
 }
 
-// sandboxToPool maps a Sandbox event to the ControllerPools in the same namespace.
-func (r *ControllerPoolReconciler) sandboxToPool(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *ControllerPoolReconciler) sessionToPool(ctx context.Context, obj client.Object) []reconcile.Request {
 	var poolList boxyv1.ControllerPoolList
 	if err := r.List(ctx, &poolList, client.InNamespace(r.cfg.Namespace)); err != nil {
-		r.log.Error("sandboxToPool: list ControllerPools failed", "err", err)
+		r.log.Error("sessionToPool: list ControllerPools failed", "err", err)
 		return nil
 	}
 	reqs := make([]reconcile.Request, 0, len(poolList.Items))

@@ -70,9 +70,15 @@ func main() {
 		MTLSDisabled:           envBool("BOXY_MTLS_DISABLED", false),
 	}
 
-	reconciler := operator.NewSandboxReconciler(mgr.GetClient(), cc, cfg)
-	if err := reconciler.SetupWithManager(mgr); err != nil {
-		slog.Error("unable to create sandbox controller", "err", err)
+	sessionReconciler := operator.NewSessionReconciler(mgr.GetClient(), cc, cfg)
+	if err := sessionReconciler.SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create session controller", "err", err)
+		os.Exit(1)
+	}
+
+	sandboxConfigReconciler := operator.NewSandboxConfigReconciler(mgr.GetClient(), cfg)
+	if err := sandboxConfigReconciler.SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create sandboxconfig controller", "err", err)
 		os.Exit(1)
 	}
 
@@ -93,7 +99,7 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	go reconciler.RunScaleDownLoop(ctx)
+	go sessionReconciler.RunScaleDownLoop(ctx)
 
 	slog.Info("starting operator", "namespace", ns, "statefulset", stsName)
 	if err := mgr.Start(ctx); err != nil {

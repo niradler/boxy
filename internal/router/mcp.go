@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,6 +21,7 @@ type bashParams struct {
 func (s *Server) newMCPHandler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		sandboxID := r.Header.Get("X-Sandbox-Id")
+		sessionID := r.Header.Get("X-Session-Id")
 
 		mcpSrv := mcp.NewServer(&mcp.Implementation{
 			Name:    "boxy",
@@ -30,7 +32,7 @@ func (s *Server) newMCPHandler() http.Handler {
 			Name:        "bash",
 			Description: "Execute a shell command in a sandbox",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, params bashParams) (*mcp.CallToolResult, any, error) {
-			return s.mcpBashTool(ctx, sandboxID, params)
+			return s.mcpBashTool(ctx, sandboxID, sessionID, params)
 		})
 
 		return mcpSrv
@@ -53,7 +55,7 @@ func toolText(text string) (*mcp.CallToolResult, any, error) {
 	}, nil, nil
 }
 
-func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashParams) (*mcp.CallToolResult, any, error) {
+func (s *Server) mcpBashTool(ctx context.Context, sandboxID, sessionID string, params bashParams) (*mcp.CallToolResult, any, error) {
 	if params.Command == "" {
 		return toolError("command is required")
 	}
@@ -61,12 +63,40 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 		params.TimeoutSeconds = 60
 	}
 
-	if sandboxID == "" {
-		var err error
-		sandboxID, err = s.resolveDefaultSandboxID(ctx)
+	var session *boxyv1.Session
+	var err error
+
+	if strings.TrimSpace(sessionID) != "" {
+		session, err = s.lookupSession(ctx, sessionID)
 		if err != nil {
-			return toolError("no sandbox specified and default sandbox is not available: " + err.Error())
+			return toolError("store error: " + err.Error())
 		}
+		if session == nil {
+			return toolError(fmt.Sprintf("session %q not found", sessionID))
+		}
+		if strings.TrimSpace(sandboxID) != "" && session.Spec.SandboxID != sandboxID {
+			return toolError(fmt.Sprintf("session %q does not belong to sandbox %q", sessionID, sandboxID))
+		}
+	}
+
+	if session == nil {
+		resolvedSandboxID, resolvedSessionID, resolveErr := s.resolveDefaultSession(ctx, sandboxID)
+		if resolveErr != nil {
+			return toolError("no session specified and default session unavailable: " + resolveErr.Error())
+		}
+		sandboxID = resolvedSandboxID
+		sessionID = resolvedSessionID
+		session, err = s.lookupSession(ctx, sessionID)
+		if err != nil || session == nil {
+			return toolError(fmt.Sprintf("default session %q not found", sessionID))
+		}
+	}
+
+	if err := s.canResourceAccess(ctx, "update", "sessions", session.Name); err != nil {
+		return toolError("forbidden")
+	}
+	if session.Status.Phase != boxyv1.SandboxPhaseRunning {
+		return toolError(fmt.Sprintf("session %q not running (phase: %s)", session.Spec.SessionID, session.Status.Phase))
 	}
 
 	select {
@@ -79,18 +109,9 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(params.TimeoutSeconds)*time.Second+5*time.Second)
 	defer cancel()
 
-	sandbox, err := s.lookupSandbox(ctx, sandboxID)
-	if err != nil {
-		return toolError("store error: " + err.Error())
-	}
-	if sandbox == nil || sandbox.Status.Phase != boxyv1.SandboxPhaseRunning {
-		return toolError(fmt.Sprintf("sandbox %q not found", sandboxID))
-	}
-
-	baseURL := s.controllerURL(sandbox)
-
+	baseURL := s.controllerURLFromSession(session)
 	result, err := s.ctrlClient.Exec(ctx, baseURL, ctrlclient.ExecReq{
-		SandboxID:      sandboxID,
+		SandboxID:      session.Spec.SessionID,
 		Command:        "sh",
 		Args:           []string{"-c", params.Command},
 		TimeoutSeconds: params.TimeoutSeconds,
@@ -99,7 +120,7 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 		return toolError("exec error: " + err.Error())
 	}
 
-	go s.touchLastExec(sandbox.DeepCopy())
+	go s.touchLastExecSession(session.DeepCopy())
 
 	text := result.Stdout
 	if result.Stderr != "" {
@@ -119,4 +140,55 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID string, params bashP
 		return toolError(text)
 	}
 	return toolText(text)
+}
+
+func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (string, string, error) {
+	if !s.cfg.DefaultSandboxEnabled || s.cfg.DefaultSandboxConfig == nil {
+		return "", "", fmt.Errorf("default sandbox is disabled")
+	}
+
+	if sandboxID == "" {
+		sandboxID = s.cfg.DefaultSandboxConfig.SandboxID
+	}
+
+	sb, err := s.lookupSandbox(ctx, sandboxID)
+	if err != nil {
+		return "", "", fmt.Errorf("lookup sandbox config: %w", err)
+	}
+	if err := s.canResourceAccess(ctx, "get", "sandboxes", sandboxID); err != nil {
+		return "", "", fmt.Errorf("forbidden")
+	}
+	if sb == nil {
+		if _, err := s.createSandboxFromBody(ctx, s.cfg.DefaultSandboxConfig); err != nil {
+			return "", "", fmt.Errorf("create default sandbox config: %w", err)
+		}
+	}
+
+	prefix := sandboxID
+	if len(prefix) > 55 {
+		prefix = prefix[:55]
+	}
+	defaultSessionID := prefix + "-session"
+
+	sess, err := s.lookupSession(ctx, defaultSessionID)
+	if err != nil {
+		return "", "", err
+	}
+	if sess == nil || sess.Status.Phase == boxyv1.SandboxPhaseTerminated {
+		if err := s.canResourceAccess(ctx, "create", "sessions", defaultSessionID); err != nil {
+			return "", "", fmt.Errorf("forbidden")
+		}
+		if sess != nil {
+			if err := s.k8sClient.Delete(ctx, sess); err != nil {
+				return "", "", fmt.Errorf("delete terminated session: %w", err)
+			}
+		}
+		createCtx, cancel := context.WithTimeout(ctx, s.cfg.CreateTimeout+5*time.Second)
+		defer cancel()
+		if _, err := s.createAndWaitForSession(createCtx, defaultSessionID, sandboxID, "system"); err != nil {
+			return "", "", fmt.Errorf("create default session: %w", err)
+		}
+	}
+
+	return sandboxID, defaultSessionID, nil
 }

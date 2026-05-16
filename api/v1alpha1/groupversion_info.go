@@ -18,6 +18,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&Sandbox{},
 		&SandboxList{},
+		&Session{},
+		&SessionList{},
 		&ControllerPool{},
 		&ControllerPoolList{},
 	)
