@@ -41,63 +41,15 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestSandboxCreateAndExec(t *testing.T) {
-	base, tok := testCreds(t)
-	create := api.SandboxCreateBody{
-		SessionID:  "e2e-session",
-		SandboxID:  "e2e-sandbox-" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		Owner:      "e2e",
-		TTLSeconds: 600,
-		Env:        map[string]string{"E2E_MARKER": "provisioned"},
-	}
-	payload, _ := json.Marshal(create)
-	req, err := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Content-Type", "application/json")
-	res, err := httpClient().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
-		t.Fatalf("create status %d", res.StatusCode)
-	}
-	var sb api.SandboxResponseBody
-	if err := json.NewDecoder(res.Body).Decode(&sb); err != nil {
-		t.Fatal(err)
-	}
-	if sb.SandboxID != create.SandboxID {
-		t.Fatalf("sandboxId %q want %q", sb.SandboxID, create.SandboxID)
-	}
-
-	waitReady(t, base, tok, sb)
-
-	execBody := api.ExecRequestBody{
-		SessionID:      create.SessionID,
-		SandboxID:      create.SandboxID,
-		Command:        "sh",
-		Args:           []string{"-c", "echo -n $E2E_MARKER"},
-		Env:            map[string]string{},
-		TimeoutSeconds: 120,
-	}
-	out := postExec(t, base, tok, execBody)
-	if out.Stdout != "provisioned" {
-		t.Fatalf("stdout %q", out.Stdout)
-	}
-}
-
-func waitReady(t *testing.T, base, tok string, sb api.SandboxResponseBody) {
+func waitSessionReady(t *testing.T, base, tok, sessionID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest(http.MethodGet, base+"/v1/sandboxes/"+sb.SandboxID, nil)
+		req, _ := http.NewRequest(http.MethodGet, base+"/v1/sessions/"+sessionID, nil)
 		req.Header.Set("Authorization", "Bearer "+tok)
 		res, err := httpClient().Do(req)
 		if err == nil && res.StatusCode == http.StatusOK {
-			var cur api.SandboxResponseBody
+			var cur api.SessionResponseBody
 			_ = json.NewDecoder(res.Body).Decode(&cur)
 			res.Body.Close()
 			if cur.Ready {
@@ -108,7 +60,7 @@ func waitReady(t *testing.T, base, tok string, sb api.SandboxResponseBody) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatal("sandbox not ready")
+	t.Fatal("session not ready")
 }
 
 type jsonRPCRequest struct {
@@ -156,20 +108,10 @@ func postMCP(t *testing.T, base, tok string, rpcReq jsonRPCRequest, sandboxID st
 	return resp
 }
 
-func TestMCPBashTool(t *testing.T) {
-	base, tok := testCreds(t)
-
-	create := api.SandboxCreateBody{
-		SessionID:  "e2e-mcp-session",
-		SandboxID:  "e2e-mcp-" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		Owner:      "e2e",
-		TTLSeconds: 600,
-	}
-	payload, _ := json.Marshal(create)
-	req, err := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatal(err)
-	}
+func createSandboxHelper(t *testing.T, base, tok string, body api.SandboxCreateBody) api.SandboxConfigResponse {
+	t.Helper()
+	payload, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := httpClient().Do(req)
@@ -178,11 +120,67 @@ func TestMCPBashTool(t *testing.T) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
-		t.Fatalf("create status %d", res.StatusCode)
+		t.Fatalf("create sandbox status %d", res.StatusCode)
 	}
-	var sb api.SandboxResponseBody
-	_ = json.NewDecoder(res.Body).Decode(&sb)
-	waitReady(t, base, tok, sb)
+	var sb api.SandboxConfigResponse
+	if err := json.NewDecoder(res.Body).Decode(&sb); err != nil {
+		t.Fatal(err)
+	}
+	return sb
+}
+
+func deleteSession(t *testing.T, base, tok, sessionID string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, base+"/v1/sessions/"+sessionID, nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	_, _ = httpClient().Do(req)
+}
+
+func TestSandboxConfigAndSessionExec(t *testing.T) {
+	base, tok := testCreds(t)
+	sandboxID := "e2e-sandbox-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 600,
+		Env:        map[string]string{"E2E_MARKER": "provisioned"},
+	})
+
+	execBody := api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		Command:        "echo",
+		Args:           []string{"hi"},
+		TimeoutSeconds: 120,
+	}
+	execRes := postExecRaw(t, base, tok, execBody)
+	sessionID := execRes.Header.Get("X-Boxy-Session-Id")
+	if sessionID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing from first exec response")
+	}
+
+	waitSessionReady(t, base, tok, sessionID)
+
+	out := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
+		Command:        "sh",
+		Args:           []string{"-c", "echo -n $E2E_MARKER"},
+		Env:            map[string]string{},
+		TimeoutSeconds: 120,
+	})
+	if out.Stdout != "provisioned" {
+		t.Fatalf("stdout %q", out.Stdout)
+	}
+}
+
+func TestMCPBashTool(t *testing.T) {
+	base, tok := testCreds(t)
+
+	sandboxID := "e2e-mcp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 600,
+	})
 
 	initResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 1, Method: "initialize",
@@ -212,17 +210,13 @@ func TestMCPBashTool(t *testing.T) {
 			"name":      "bash",
 			"arguments": map[string]any{"command": "echo -n mcp-works"},
 		},
-	}, create.SandboxID)
+	}, sandboxID)
 	if callResp.Error != nil {
 		t.Fatalf("tools/call error: %s", callResp.Error.Message)
 	}
 	if !bytes.Contains(callResp.Result, []byte("mcp-works")) {
 		t.Fatalf("unexpected tools/call result: %s", callResp.Result)
 	}
-
-	delReq, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+create.SandboxID, nil)
-	delReq.Header.Set("Authorization", "Bearer "+tok)
-	_, _ = httpClient().Do(delReq)
 }
 
 // TestMCPCrossSandboxIsolation verifies that the MCP bash tool cannot read
@@ -232,38 +226,17 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 	base, tok := testCreds(t)
 
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
-	sbA := api.SandboxCreateBody{
-		SessionID: "e2e-mcp-iso", SandboxID: "e2e-mcp-iso-a-" + ts,
-		Owner: "e2e", TTLSeconds: 600,
-	}
-	sbB := api.SandboxCreateBody{
-		SessionID: "e2e-mcp-iso", SandboxID: "e2e-mcp-iso-b-" + ts,
-		Owner: "e2e", TTLSeconds: 600,
-	}
+	sandboxAID := "e2e-mcp-iso-a-" + ts
+	sandboxBID := "e2e-mcp-iso-b-" + ts
 
-	createSandbox := func(body api.SandboxCreateBody) api.SandboxResponseBody {
-		t.Helper()
-		payload, _ := json.Marshal(body)
-		req, _ := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
-		req.Header.Set("Authorization", "Bearer "+tok)
-		req.Header.Set("Content-Type", "application/json")
-		res, err := httpClient().Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusOK {
-			t.Fatalf("create status %d", res.StatusCode)
-		}
-		var sb api.SandboxResponseBody
-		_ = json.NewDecoder(res.Body).Decode(&sb)
-		return sb
-	}
-
-	sbARet := createSandbox(sbA)
-	sbBRet := createSandbox(sbB)
-	waitReady(t, base, tok, sbARet)
-	waitReady(t, base, tok, sbBRet)
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxAID,
+		TTLSeconds: 600,
+	})
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxBID,
+		TTLSeconds: 600,
+	})
 
 	writeResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 1, Method: "tools/call",
@@ -271,7 +244,7 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 			"name":      "bash",
 			"arguments": map[string]any{"command": "echo cross-sandbox-secret > /workspace/secret.txt && echo ok"},
 		},
-	}, sbA.SandboxID)
+	}, sandboxAID)
 	if writeResp.Error != nil {
 		t.Fatalf("write via MCP error: %s", writeResp.Error.Message)
 	}
@@ -285,7 +258,7 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 			"name":      "bash",
 			"arguments": map[string]any{"command": "cat /workspace/secret.txt 2>/dev/null || echo absent"},
 		},
-	}, sbB.SandboxID)
+	}, sandboxBID)
 	if readResp.Error != nil {
 		t.Fatalf("read via MCP error: %s", readResp.Error.Message)
 	}
@@ -326,40 +299,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 	if !noSuchTool.IsError {
 		t.Fatal("expected tool-level error for non-existent sandbox, got success")
 	}
-
-	for _, id := range []string{sbA.SandboxID, sbB.SandboxID} {
-		delReq, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+id, nil)
-		delReq.Header.Set("Authorization", "Bearer "+tok)
-		_, _ = httpClient().Do(delReq)
-	}
-}
-
-func createSandboxHelper(t *testing.T, base, tok string, body api.SandboxCreateBody) api.SandboxResponseBody {
-	t.Helper()
-	payload, _ := json.Marshal(body)
-	req, _ := http.NewRequest(http.MethodPost, base+"/v1/sandboxes", bytes.NewReader(payload))
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Content-Type", "application/json")
-	res, err := httpClient().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
-		t.Fatalf("create sandbox status %d", res.StatusCode)
-	}
-	var sb api.SandboxResponseBody
-	if err := json.NewDecoder(res.Body).Decode(&sb); err != nil {
-		t.Fatal(err)
-	}
-	return sb
-}
-
-func deleteSandbox(t *testing.T, base, tok, id string) {
-	t.Helper()
-	req, _ := http.NewRequest(http.MethodDelete, base+"/v1/sandboxes/"+id, nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
-	_, _ = httpClient().Do(req)
 }
 
 // TestExecTimedOut verifies that timedOut=true and exitCode=137 are returned
@@ -367,18 +306,31 @@ func deleteSandbox(t *testing.T, base, tok, id string) {
 func TestExecTimedOut(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
-	sb := createSandboxHelper(t, base, tok, api.SandboxCreateBody{
-		SessionID:  "e2e-timeout",
-		SandboxID:  "e2e-timeout-" + ts,
-		Owner:      "e2e",
+	sandboxID := "e2e-timeout-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
 		TTLSeconds: 120,
 	})
-	t.Cleanup(func() { deleteSandbox(t, base, tok, sb.SandboxID) })
-	waitReady(t, base, tok, sb)
+
+	// First exec auto-creates the session.
+	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		Command:        "echo",
+		Args:           []string{"hi"},
+		TimeoutSeconds: 120,
+	})
+	sessionID := warmupRes.Header.Get("X-Boxy-Session-Id")
+	if sessionID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionID) })
+
+	waitSessionReady(t, base, tok, sessionID)
 
 	out := postExec(t, base, tok, api.ExecRequestBody{
-		SessionID:      "e2e-timeout",
-		SandboxID:      sb.SandboxID,
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
 		Command:        "sleep",
 		Args:           []string{"60"},
 		TimeoutSeconds: 2,
@@ -396,20 +348,33 @@ func TestExecTimedOut(t *testing.T) {
 func TestInternetAccessDNS(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
-	sb := createSandboxHelper(t, base, tok, api.SandboxCreateBody{
-		SessionID:  "e2e-dns",
-		SandboxID:  "e2e-dns-" + ts,
-		Owner:      "e2e",
+	sandboxID := "e2e-dns-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
 		TTLSeconds: 120,
 		Network:    &api.SandboxNetworkConfig{AllowInternetAccess: true},
 	})
-	t.Cleanup(func() { deleteSandbox(t, base, tok, sb.SandboxID) })
-	waitReady(t, base, tok, sb)
+
+	// First exec auto-creates the session.
+	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		Command:        "echo",
+		Args:           []string{"hi"},
+		TimeoutSeconds: 120,
+	})
+	sessionID := warmupRes.Header.Get("X-Boxy-Session-Id")
+	if sessionID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionID) })
+
+	waitSessionReady(t, base, tok, sessionID)
 
 	// /etc/resolv.conf must have nameserver entries - validates the resolv.conf bind-mount.
 	resolvOut := postExec(t, base, tok, api.ExecRequestBody{
-		SessionID:      "e2e-dns",
-		SandboxID:      sb.SandboxID,
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
 		Command:        "sh",
 		Args:           []string{"-c", "grep -c nameserver /etc/resolv.conf 2>/dev/null || echo 0"},
 		TimeoutSeconds: 10,
@@ -421,8 +386,8 @@ func TestInternetAccessDNS(t *testing.T) {
 	// DNS resolution requires controller.networkPolicy.allowInternetEgress=true.
 	// Skip gracefully if egress is blocked at the network layer.
 	dnsOut := postExec(t, base, tok, api.ExecRequestBody{
-		SessionID:      "e2e-dns",
-		SandboxID:      sb.SandboxID,
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
 		Command:        "sh",
 		Args:           []string{"-c", "getent hosts example.com 2>/dev/null | head -1 | awk '{print $1}' || echo blocked"},
 		TimeoutSeconds: 15,
@@ -436,10 +401,13 @@ func TestInternetAccessDNS(t *testing.T) {
 	}
 }
 
-func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.ExecResponseBody {
+// postExecRaw posts to /v1/sessions/exec and returns the raw *http.Response so
+// callers can read headers (e.g. X-Boxy-Session-Id) before the body is consumed.
+// The caller must not close the body; postExecRaw drains and closes it internally.
+func postExecRaw(t *testing.T, base, tok string, body api.ExecRequestBody) *http.Response {
 	t.Helper()
 	payload, _ := json.Marshal(body)
-	req, err := http.NewRequest(http.MethodPost, base+"/v1/exec", bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/sessions/exec", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,10 +417,17 @@ func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.Exec
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		res.Body.Close()
 		t.Fatalf("exec status %d", res.StatusCode)
 	}
+	return res
+}
+
+func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.ExecResponseBody {
+	t.Helper()
+	res := postExecRaw(t, base, tok, body)
+	defer res.Body.Close()
 	var out api.ExecResponseBody
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		t.Fatal(err)
