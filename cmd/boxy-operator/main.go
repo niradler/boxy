@@ -32,11 +32,11 @@ func main() {
 	headlessSvc := envStr("BOXY_CONTROLLER_HEADLESS_SERVICE", stsName+"-headless")
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		LeaderElection:         true,
-		LeaderElectionID:       "boxy-operator-leader",
+		Scheme:                  scheme,
+		LeaderElection:          true,
+		LeaderElectionID:        "boxy-operator-leader",
 		LeaderElectionNamespace: ns,
-		HealthProbeBindAddress: ":8081",
+		HealthProbeBindAddress:  ":8081",
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{ns: {}},
 		},

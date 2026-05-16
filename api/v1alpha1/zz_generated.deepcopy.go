@@ -113,7 +113,6 @@ func (in *SandboxSpec) DeepCopy() *SandboxSpec {
 	return out
 }
 
-
 func (in *ControllerPool) DeepCopyInto(out *ControllerPool) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta

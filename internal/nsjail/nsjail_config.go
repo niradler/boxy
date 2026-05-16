@@ -8,7 +8,7 @@ import (
 type Mode int
 
 const (
-	ModeOnce   Mode = iota
+	ModeOnce Mode = iota
 	ModeListen
 )
 

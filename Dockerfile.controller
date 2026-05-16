@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnl-route-3-200 \
         util-linux \
         ca-certificates \
+        iptables \
+        iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail

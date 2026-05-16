@@ -72,8 +72,8 @@ const (
 type Session struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec   SessionSpec   `json:"spec,omitempty"`
-	Status SessionStatus `json:"status,omitempty"`
+	Spec              SessionSpec   `json:"spec,omitempty"`
+	Status            SessionStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
