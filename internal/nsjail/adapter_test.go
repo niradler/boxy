@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"boxy.dev/boxy/internal/api"
@@ -338,6 +340,136 @@ func TestValidateCreateRequest_ValidBinaryName(t *testing.T) {
 	req := &api.SandboxCreateBody{AllowedBinaries: []string{"jq", "yq", "python3"}}
 	if err := a.validateCreateRequest(req); err != nil {
 		t.Errorf("valid binary names should pass: %v", err)
+	}
+}
+
+func writeTestScript(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	var path string
+	if runtime.GOOS == "windows" {
+		path = filepath.Join(dir, name+".bat")
+		body = "@echo off\r\n" + body
+	} else {
+		path = filepath.Join(dir, name)
+		body = "#!/bin/sh\n" + body
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCreate_SetupScriptWritesFile(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	scriptDir := t.TempDir()
+
+	var script string
+	if runtime.GOOS == "windows" {
+		script = writeTestScript(t, scriptDir, "setup", "echo ok > \"%BOXY_WORKSPACE%\\setup-ran.txt\"\r\n")
+	} else {
+		script = writeTestScript(t, scriptDir, "setup", "echo ok > \"$BOXY_WORKSPACE/setup-ran.txt\"\n")
+	}
+
+	req := &api.SandboxCreateBody{
+		SandboxID:   "hook-test",
+		SetupScript: script,
+	}
+	if err := a.Create(context.TODO(), req); err != nil {
+		t.Fatalf("Create with setup script: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Delete(context.TODO(), "hook-test") })
+
+	marker := filepath.Join(a.sandboxes["hook-test"].workspace, "setup-ran.txt")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("setup script did not create marker file: %v", err)
+	}
+}
+
+func TestCreate_SetupScriptFailure_CleansUp(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	scriptDir := t.TempDir()
+
+	var script string
+	if runtime.GOOS == "windows" {
+		script = writeTestScript(t, scriptDir, "fail", "exit /b 1\r\n")
+	} else {
+		script = writeTestScript(t, scriptDir, "fail", "exit 1\n")
+	}
+
+	req := &api.SandboxCreateBody{
+		SandboxID:   "hook-fail",
+		SetupScript: script,
+	}
+	err := a.Create(context.TODO(), req)
+	if err == nil {
+		t.Fatal("Create should fail when setup script exits non-zero")
+	}
+	if !strings.Contains(err.Error(), "setup script failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, exists := a.sandboxes["hook-fail"]; exists {
+		t.Error("sandbox should be removed from map after setup script failure")
+	}
+}
+
+func TestCreate_ScriptEnvPassedToHook(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	scriptDir := t.TempDir()
+
+	var script string
+	if runtime.GOOS == "windows" {
+		script = writeTestScript(t, scriptDir, "envcheck",
+			"echo %MY_CUSTOM_VAR% > \"%BOXY_WORKSPACE%\\env-val.txt\"\r\n")
+	} else {
+		script = writeTestScript(t, scriptDir, "envcheck",
+			"echo $MY_CUSTOM_VAR > \"$BOXY_WORKSPACE/env-val.txt\"\n")
+	}
+
+	req := &api.SandboxCreateBody{
+		SandboxID:   "env-test",
+		SetupScript: script,
+		ScriptEnv:   map[string]string{"MY_CUSTOM_VAR": "hello-from-crd"},
+	}
+	if err := a.Create(context.TODO(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Delete(context.TODO(), "env-test") })
+
+	data, err := os.ReadFile(filepath.Join(a.sandboxes["env-test"].workspace, "env-val.txt"))
+	if err != nil {
+		t.Fatalf("read env-val.txt: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "hello-from-crd" {
+		t.Fatalf("ScriptEnv not passed: got %q", got)
+	}
+}
+
+func TestDelete_TeardownScriptRuns(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	markerDir := t.TempDir()
+	markerFile := filepath.Join(markerDir, "teardown-ran.txt")
+
+	var script string
+	if runtime.GOOS == "windows" {
+		script = writeTestScript(t, markerDir, "teardown",
+			"echo done > \""+markerFile+"\"\r\n")
+	} else {
+		script = writeTestScript(t, markerDir, "teardown",
+			"echo done > '"+markerFile+"'\n")
+	}
+
+	req := &api.SandboxCreateBody{
+		SandboxID:      "td-test",
+		TeardownScript: script,
+	}
+	if err := a.Create(context.TODO(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := a.Delete(context.TODO(), "td-test"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(markerFile); err != nil {
+		t.Fatalf("teardown script did not run: %v", err)
 	}
 }
 
