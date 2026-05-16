@@ -133,7 +133,11 @@ func deleteSession(t *testing.T, base, tok, sessionID string) {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodDelete, base+"/v1/sessions/"+sessionID, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
-	_, _ = httpClient().Do(req)
+	res, err := httpClient().Do(req)
+	if err != nil {
+		return
+	}
+	res.Body.Close()
 }
 
 func TestSandboxConfigAndSessionExec(t *testing.T) {
@@ -153,10 +157,12 @@ func TestSandboxConfigAndSessionExec(t *testing.T) {
 		TimeoutSeconds: 120,
 	}
 	execRes := postExecRaw(t, base, tok, execBody)
+	execRes.Body.Close()
 	sessionID := execRes.Header.Get("X-Boxy-Session-Id")
 	if sessionID == "" {
 		t.Fatal("X-Boxy-Session-Id header missing from first exec response")
 	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionID) })
 
 	waitSessionReady(t, base, tok, sessionID)
 
@@ -320,6 +326,7 @@ func TestExecTimedOut(t *testing.T) {
 		Args:           []string{"hi"},
 		TimeoutSeconds: 120,
 	})
+	warmupRes.Body.Close()
 	sessionID := warmupRes.Header.Get("X-Boxy-Session-Id")
 	if sessionID == "" {
 		t.Fatal("X-Boxy-Session-Id header missing")
@@ -363,6 +370,7 @@ func TestInternetAccessDNS(t *testing.T) {
 		Args:           []string{"hi"},
 		TimeoutSeconds: 120,
 	})
+	warmupRes.Body.Close()
 	sessionID := warmupRes.Header.Get("X-Boxy-Session-Id")
 	if sessionID == "" {
 		t.Fatal("X-Boxy-Session-Id header missing")
@@ -401,9 +409,8 @@ func TestInternetAccessDNS(t *testing.T) {
 	}
 }
 
-// postExecRaw posts to /v1/sessions/exec and returns the raw *http.Response so
-// callers can read headers (e.g. X-Boxy-Session-Id) before the body is consumed.
-// The caller must not close the body; postExecRaw drains and closes it internally.
+// postExecRaw posts to /v1/sessions/exec and returns the raw response.
+// Caller must close the body.
 func postExecRaw(t *testing.T, base, tok string, body api.ExecRequestBody) *http.Response {
 	t.Helper()
 	payload, _ := json.Marshal(body)
