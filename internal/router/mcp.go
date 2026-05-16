@@ -164,7 +164,11 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 		}
 	}
 
-	defaultSessionID := sandboxID + "-session"
+	prefix := sandboxID
+	if len(prefix) > 55 {
+		prefix = prefix[:55]
+	}
+	defaultSessionID := prefix + "-session"
 
 	sess, err := s.lookupSession(ctx, defaultSessionID)
 	if err != nil {

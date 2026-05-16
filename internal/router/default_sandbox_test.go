@@ -23,16 +23,6 @@ func TestEnsureDefaultSandbox_Disabled(t *testing.T) {
 	}
 }
 
-func TestResolveDefaultSandboxID_Disabled(t *testing.T) {
-	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer ctrl.Close()
-	srv := newTestServer(t, ctrl.URL, nil)
-
-	_, err := srv.resolveDefaultSandboxID(context.Background())
-	if err == nil {
-		t.Fatal("expected error when default sandbox disabled")
-	}
-}
 
 func TestEnsureDefaultSandbox_AlreadyExists(t *testing.T) {
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

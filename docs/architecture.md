@@ -117,8 +117,8 @@ Output size enforcement is at the **controller**, not the router — see §4.3.
 
 The operator runs two reconcilers:
 
-1. **SandboxReconciler** — watches Sandbox CRs and drives the sandbox lifecycle state machine.
-2. **ControllerPoolReconciler** — watches `ControllerPool` CRs and Sandbox events; keeps `ControllerPool.status` (readyReplicas, activeSandboxCount, Ready condition) in sync with the StatefulSet and live sandbox count.
+1. **SessionReconciler** — watches Session CRs and drives the session lifecycle state machine.
+2. **ControllerPoolReconciler** — watches `ControllerPool` CRs and Session events; keeps `ControllerPool.status` (readyReplicas, activeSandboxCount, Ready condition) in sync with the StatefulSet and live session count.
 
 The sandbox state machine:
 

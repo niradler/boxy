@@ -688,9 +688,7 @@ curl -sS \
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-50">
-                <tr><td class="px-4 py-2 font-mono text-blue-700">sandboxId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required. 1–253 chars</td></tr>
-                <tr><td class="px-4 py-2 font-mono text-blue-700">sessionId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required</td></tr>
-                <tr><td class="px-4 py-2 font-mono text-blue-700">owner*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-blue-700">sandboxId*</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Required. 1–63 chars</td></tr>
                 <tr><td class="px-4 py-2 font-mono">ttlSeconds</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">0–604800. Sliding TTL window</td></tr>
                 <tr><td class="px-4 py-2 font-mono">env</td><td class="px-4 py-2">map&lt;string&gt;</td><td class="px-4 py-2 text-gray-500">BOXY_* / KUBERNETES_* reserved</td></tr>
                 <tr><td class="px-4 py-2 font-mono">allowedBinaries</td><td class="px-4 py-2">string[]</td><td class="px-4 py-2 text-gray-500">Bind-mount whitelist</td></tr>
@@ -710,7 +708,6 @@ curl -sS \
                 <tr><td class="px-4 py-2 font-mono">network.trustHostCAs</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Mount host CA bundle</td></tr>
                 <tr><td class="px-4 py-2 font-mono">volumes</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{guestPath, type, hostPath, sizeMb, readonly}</td></tr>
                 <tr><td class="px-4 py-2 font-mono">patches</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{type, path, content, bytes, hostPath, mode, replace}</td></tr>
-                <tr><td class="px-4 py-2 font-mono">retentionPeriod</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Duration (e.g. 1h, 30m) to keep CR after termination</td></tr>
               </tbody>
             </table>
           </div>
@@ -747,8 +744,6 @@ metadata:
   name: demo-1
 spec:
   sandboxId: demo-1
-  sessionId: demo
-  owner: alice
   ttlSeconds: 3600
   vm:
     memoryMb: 512

@@ -433,16 +433,6 @@ func (s *Server) EnsureDefaultSandbox(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) resolveDefaultSandboxID(ctx context.Context) (string, error) {
-	if !s.cfg.DefaultSandboxEnabled || s.cfg.DefaultSandboxConfig == nil {
-		return "", fmt.Errorf("default sandbox is disabled")
-	}
-	id := s.cfg.DefaultSandboxConfig.SandboxID
-	if err := s.EnsureDefaultSandbox(ctx); err != nil {
-		return "", err
-	}
-	return id, nil
-}
 
 func (s *Server) lookupSession(ctx context.Context, sessionID string) (*boxyv1.Session, error) {
 	var list boxyv1.SessionList
@@ -609,7 +599,6 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 				s.jsonErr(w, http.StatusInternalServerError, err.Error(), "delete_terminated")
 				return
 			}
-			sessionID = generateSessionID()
 		}
 
 		sb, err := s.lookupSandbox(ctx, body.SandboxID)
