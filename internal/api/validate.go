@@ -59,6 +59,12 @@ func ValidateSandboxCreate(b *SandboxCreateBody, maxTTL int) error {
 	if strings.TrimSpace(b.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
 	}
+	if len(b.SandboxID) > 253 {
+		return fmt.Errorf("sandboxId too long")
+	}
+	if !K8sNameRegex.MatchString(b.SandboxID) {
+		return fmt.Errorf("sandboxId must be a valid K8s name (lowercase alphanumeric, '-', '.')")
+	}
 	if b.TTLSeconds < 0 {
 		return fmt.Errorf("ttlSeconds must be non-negative")
 	}

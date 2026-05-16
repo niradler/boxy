@@ -46,7 +46,7 @@ RUN git clone --depth=1 https://github.com/google/nsjail.git /nsjail && \
 # 24.04 rootfs without needing any shared libraries to be pre-installed.
 FROM debian:bookworm-slim AS tools-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl \
+        ca-certificates curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 # jq 1.7.1 — musl-static build, no glibc dependency
 RUN curl -fsSL -o /jq \
@@ -56,6 +56,13 @@ RUN curl -fsSL -o /jq \
 RUN curl -fsSL -o /yq \
         "https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64" \
     && chmod +x /yq
+# curl 8.20.0 — glibc-static build, no shared-lib deps in the Ubuntu 24.04 rootfs
+RUN curl -fsSL -o /tmp/curl.tar.xz \
+        "https://github.com/stunnel/static-curl/releases/download/8.20.0/curl-linux-x86_64-glibc-8.20.0.tar.xz" \
+    && tar -xJf /tmp/curl.tar.xz -C /tmp \
+    && find /tmp -name curl -type f -exec mv {} /curl \; \
+    && chmod +x /curl \
+    && rm /tmp/curl.tar.xz
 
 # ── Stage 4: Bare Ubuntu 24.04 sandbox rootfs ────────────────────────────────
 # INTENTIONALLY has no dev tools installed. Sandboxes start from a minimal
@@ -78,8 +85,9 @@ COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail
 COPY --from=rootfs / /rootfs/ubuntu-24.04
 
 # Dev tool bind-mount sources (controller-side only, never visible without allowedBinaries):
-COPY --from=tools-builder /jq  /usr/local/bin/jq
-COPY --from=tools-builder /yq  /usr/local/bin/yq
+COPY --from=tools-builder /jq   /usr/local/bin/jq
+COPY --from=tools-builder /yq   /usr/local/bin/yq
+COPY --from=tools-builder /curl /usr/local/bin/curl
 
 COPY --from=go-builder /boxy-controller /usr/local/bin/boxy-controller
 

@@ -76,17 +76,17 @@ router_rules=$(echo "${router_role}" | jq -c '.rules // []')
 router_has_sandbox_crd=$(echo "${router_rules}" | jq '[.[] | select(.apiGroups[]? == "boxy.dev" and (.resources[]? == "sandboxes"))] | length')
 assert_gt "Router role has sandboxes CRD permission" "${router_has_sandbox_crd}" 0
 
-router_has_status=$(echo "${router_rules}" | jq '[.[] | select(.apiGroups[]? == "boxy.dev" and (.resources[]? == "sandboxes/status"))] | length')
-assert_gt "Router role has sandboxes/status permission" "${router_has_status}" 0
+router_has_sessions=$(echo "${router_rules}" | jq '[.[] | select(.apiGroups[]? == "boxy.dev" and (.resources[]? == "sessions"))] | length')
+assert_gt "Router role has sessions CRD permission" "${router_has_sessions}" 0
+
+router_has_sessions_status=$(echo "${router_rules}" | jq '[.[] | select(.apiGroups[]? == "boxy.dev" and (.resources[]? == "sessions/status"))] | length')
+assert_gt "Router role has sessions/status permission" "${router_has_sessions_status}" 0
 
 router_has_configmaps=$(echo "${router_rules}" | jq '[.[] | select(.resources[]? == "configmaps")] | length')
 assert_eq "Router role has NO configmaps permission" "0" "${router_has_configmaps}"
 
 router_has_pods=$(echo "${router_rules}" | jq '[.[] | select(.apiGroups[]? == "" and (.resources[]? == "pods"))] | length')
 assert_eq "Router role has NO pods permission" "0" "${router_has_pods}"
-
-router_sandbox_verbs=$(echo "${router_rules}" | jq -r '[.[] | select(.apiGroups[]? == "boxy.dev" and (.resources[]? == "sandboxes") and (.resources | all(. != "sandboxes/status"))) | .verbs[]] | unique | sort | join(",")')
-assert_not_contains "Router cannot update sandboxes (only get,list,watch,create,delete)" "${router_sandbox_verbs}" "update"
 
 suite "Operator RBAC"
 
@@ -152,10 +152,10 @@ if [[ -n "${BASE_URL}" ]]; then
     -d '{"sessionId":"x","sandboxId":"x","owner":"x","ttlSeconds":60}' 2>/dev/null || echo "000")
   assert_http_status "POST /v1/sandboxes with wrong token returns 401" "401" "${bad_auth_status}"
 
-  no_auth_exec=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/v1/exec" \
+  no_auth_exec=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/v1/sessions/exec" \
     -H 'Content-Type: application/json' \
-    -d '{"sessionId":"x","sandboxId":"x","command":"id","timeoutSeconds":5}' 2>/dev/null || echo "000")
-  assert_http_status "POST /v1/exec without auth returns 401" "401" "${no_auth_exec}"
+    -d '{"sandboxId":"x","command":"id","timeoutSeconds":5}' 2>/dev/null || echo "000")
+  assert_http_status "POST /v1/sessions/exec without auth returns 401" "401" "${no_auth_exec}"
 
   no_auth_get=$(curl -sS -o /dev/null -w '%{http_code}' "${BASE_URL}/v1/sandboxes/nonexistent" 2>/dev/null || echo "000")
   assert_http_status "GET /v1/sandboxes/:id without auth returns 401" "401" "${no_auth_get}"

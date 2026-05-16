@@ -80,7 +80,7 @@ type jsonRPCResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func postMCP(t *testing.T, base, tok string, rpcReq jsonRPCRequest, sandboxID string) jsonRPCResponse {
+func postMCP(t *testing.T, base, tok string, rpcReq jsonRPCRequest, sessionID string) jsonRPCResponse {
 	t.Helper()
 	payload, _ := json.Marshal(rpcReq)
 	req, err := http.NewRequest(http.MethodPost, base+"/mcp", bytes.NewReader(payload))
@@ -90,8 +90,8 @@ func postMCP(t *testing.T, base, tok string, rpcReq jsonRPCRequest, sandboxID st
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	if sandboxID != "" {
-		req.Header.Set("X-Sandbox-Id", sandboxID)
+	if sessionID != "" {
+		req.Header.Set("X-Session-Id", sessionID)
 	}
 	res, err := httpClient().Do(req)
 	if err != nil {
@@ -188,6 +188,20 @@ func TestMCPBashTool(t *testing.T) {
 		TTLSeconds: 600,
 	})
 
+	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		Command:        "echo",
+		Args:           []string{"hi"},
+		TimeoutSeconds: 120,
+	})
+	warmupRes.Body.Close()
+	sessionID := warmupRes.Header.Get("X-Boxy-Session-Id")
+	if sessionID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionID) })
+	waitSessionReady(t, base, tok, sessionID)
+
 	initResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 1, Method: "initialize",
 		Params: map[string]any{
@@ -195,14 +209,14 @@ func TestMCPBashTool(t *testing.T) {
 			"clientInfo":      map[string]any{"name": "e2e-test", "version": "1.0.0"},
 			"capabilities":    map[string]any{},
 		},
-	}, "")
+	}, sessionID)
 	if initResp.Error != nil {
 		t.Fatalf("initialize error: %s", initResp.Error.Message)
 	}
 
 	listResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 2, Method: "tools/list",
-	}, "")
+	}, sessionID)
 	if listResp.Error != nil {
 		t.Fatalf("tools/list error: %s", listResp.Error.Message)
 	}
@@ -216,7 +230,7 @@ func TestMCPBashTool(t *testing.T) {
 			"name":      "bash",
 			"arguments": map[string]any{"command": "echo -n mcp-works"},
 		},
-	}, sandboxID)
+	}, sessionID)
 	if callResp.Error != nil {
 		t.Fatalf("tools/call error: %s", callResp.Error.Message)
 	}
@@ -226,7 +240,7 @@ func TestMCPBashTool(t *testing.T) {
 }
 
 // TestMCPCrossSandboxIsolation verifies that the MCP bash tool cannot read
-// files written in a different sandbox's workspace, even when both sandboxes
+// files written in a different sandbox's session, even when both sandboxes
 // are accessible with the same auth token.
 func TestMCPCrossSandboxIsolation(t *testing.T) {
 	base, tok := testCreds(t)
@@ -244,13 +258,35 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 		TTLSeconds: 600,
 	})
 
+	warmupA := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxAID, Command: "echo", Args: []string{"hi"}, TimeoutSeconds: 120,
+	})
+	warmupA.Body.Close()
+	sessionAID := warmupA.Header.Get("X-Boxy-Session-Id")
+	if sessionAID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing for sandbox A")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionAID) })
+	waitSessionReady(t, base, tok, sessionAID)
+
+	warmupB := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxBID, Command: "echo", Args: []string{"hi"}, TimeoutSeconds: 120,
+	})
+	warmupB.Body.Close()
+	sessionBID := warmupB.Header.Get("X-Boxy-Session-Id")
+	if sessionBID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing for sandbox B")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionBID) })
+	waitSessionReady(t, base, tok, sessionBID)
+
 	writeResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 1, Method: "tools/call",
 		Params: map[string]any{
 			"name":      "bash",
 			"arguments": map[string]any{"command": "echo cross-sandbox-secret > /workspace/secret.txt && echo ok"},
 		},
-	}, sandboxAID)
+	}, sessionAID)
 	if writeResp.Error != nil {
 		t.Fatalf("write via MCP error: %s", writeResp.Error.Message)
 	}
@@ -264,7 +300,7 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 			"name":      "bash",
 			"arguments": map[string]any{"command": "cat /workspace/secret.txt 2>/dev/null || echo absent"},
 		},
-	}, sandboxBID)
+	}, sessionBID)
 	if readResp.Error != nil {
 		t.Fatalf("read via MCP error: %s", readResp.Error.Message)
 	}
@@ -287,14 +323,14 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 		t.Fatalf("cross-sandbox isolation FAILED: sandbox B read sandbox A's file, got %q", got)
 	}
 
-	// Invalid sandbox ID must return a tool-level error (not HTTP 500).
+	// Invalid session ID must return a tool-level error (not HTTP 500).
 	noSuchResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 3, Method: "tools/call",
 		Params: map[string]any{
 			"name":      "bash",
 			"arguments": map[string]any{"command": "echo hi"},
 		},
-	}, "sandbox-does-not-exist")
+	}, "session-does-not-exist")
 	if noSuchResp.Error != nil {
 		t.Fatalf("expected tool-level error, got rpc error: %s", noSuchResp.Error.Message)
 	}
@@ -303,7 +339,7 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 	}
 	_ = json.Unmarshal(noSuchResp.Result, &noSuchTool)
 	if !noSuchTool.IsError {
-		t.Fatal("expected tool-level error for non-existent sandbox, got success")
+		t.Fatal("expected tool-level error for non-existent session, got success")
 	}
 }
 

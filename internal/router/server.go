@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -257,6 +259,18 @@ func (s *Server) withBodyLimit(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		if errors.As(err, new(*http.MaxBytesError)) {
+			s.jsonErr(w, http.StatusRequestEntityTooLarge, "request body too large", "")
+		} else {
+			s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
+		}
+		return false
+	}
+	return true
+}
+
 func (s *Server) jsonErr(w http.ResponseWriter, code int, msg, cerr string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -271,8 +285,7 @@ func (s *Server) writeJSON(w http.ResponseWriter, code int, v any) {
 
 func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	var body api.SandboxCreateBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
+	if !s.decodeBody(w, r, &body) {
 		return
 	}
 	if err := api.ValidateSandboxCreate(&body, s.cfg.MaxSandboxTTLSec); err != nil {
@@ -281,6 +294,10 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.createSandboxFromBody(r.Context(), &body)
 	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			s.jsonErr(w, http.StatusConflict, "sandbox already exists", "create_sandbox")
+			return
+		}
 		s.jsonErr(w, http.StatusBadGateway, err.Error(), "create_sandbox")
 		return
 	}
@@ -537,8 +554,7 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body api.ExecRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
+	if !s.decodeBody(w, r, &body) {
 		return
 	}
 	if err := api.ValidateExecRequest(&body, s.cfg.MaxTimeoutSec, s.cfg.MaxArgs, s.cfg.MaxEnvKeys); err != nil {
@@ -625,8 +641,7 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	var body api.SessionCreateBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
+	if !s.decodeBody(w, r, &body) {
 		return
 	}
 	if err := api.ValidateSessionCreate(&body); err != nil {
@@ -773,8 +788,7 @@ func (s *Server) handleSandboxUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body api.SandboxCreateBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
+	if !s.decodeBody(w, r, &body) {
 		return
 	}
 	body.SandboxID = id

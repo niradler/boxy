@@ -146,10 +146,10 @@ curl_api_status() {
 
 curl_mcp() {
   local body="$1"
-  local sandbox_header="${2:-}"
+  local session_header="${2:-}"
   local extra_args=()
-  if [[ -n "${sandbox_header}" ]]; then
-    extra_args+=(-H "X-Sandbox-Id: ${sandbox_header}")
+  if [[ -n "${session_header}" ]]; then
+    extra_args+=(-H "X-Session-Id: ${session_header}")
   fi
   curl -sS -X POST "${BASE_URL}/mcp" \
     -H "Authorization: Bearer ${ROUTER_TOKEN}" \
@@ -159,19 +159,30 @@ curl_mcp() {
     -d "${body}"
 }
 
-wait_sandbox_ready() {
-  local sandbox_id="$1"
+wait_session_ready() {
+  local session_id="$1"
   local timeout="${2:-120}"
   local deadline=$((SECONDS + timeout))
   while [[ ${SECONDS} -lt ${deadline} ]]; do
-    local phase
-    phase=$(curl_api GET "/v1/sandboxes/${sandbox_id}" 2>/dev/null | jq -r '.phase // empty' 2>/dev/null || true)
-    if [[ "${phase}" == "Running" ]]; then
+    local ready
+    ready=$(curl_api GET "/v1/sessions/${session_id}" 2>/dev/null | jq -r '.ready // empty' 2>/dev/null || true)
+    if [[ "${ready}" == "true" ]]; then
       return 0
     fi
     sleep 2
   done
   return 1
+}
+
+wait_sandbox_ready() {
+  local sandbox_id="$1"
+  local timeout="${2:-120}"
+  local session_id
+  session_id=$(curl_api POST "/v1/sessions" \
+    -d "{\"sandboxId\":\"${sandbox_id}\"}" 2>/dev/null \
+    | jq -r '.sessionId // empty' 2>/dev/null || true)
+  [[ -n "${session_id}" ]] || return 1
+  wait_session_ready "${session_id}" "${timeout}"
 }
 
 unique_id() {

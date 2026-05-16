@@ -25,21 +25,24 @@ SB_CROSS_A=$(unique_id)
 SB_CROSS_B=$(unique_id)
 
 curl_api POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_INET}\",\"owner\":\"e2e\",\"ttlSeconds\":300,
-       \"network\":{\"allowInternetAccess\":true}}" >/dev/null
+  -d "{\"sandboxId\":\"${SB_INET}\",\"ttlSeconds\":300,\"network\":{\"allowInternetAccess\":true}}" >/dev/null
 
 curl_api POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_BLOCK}\",\"owner\":\"e2e\",\"ttlSeconds\":300}" >/dev/null
+  -d "{\"sandboxId\":\"${SB_BLOCK}\",\"ttlSeconds\":300}" >/dev/null
 
 curl_api POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_A}\",\"owner\":\"e2e\",\"ttlSeconds\":300,
-       \"network\":{\"allowInternetAccess\":true}}" >/dev/null
+  -d "{\"sandboxId\":\"${SB_CROSS_A}\",\"ttlSeconds\":300,\"network\":{\"allowInternetAccess\":true}}" >/dev/null
 
 curl_api POST "/v1/sandboxes" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_B}\",\"owner\":\"e2e\",\"ttlSeconds\":300}" >/dev/null
+  -d "{\"sandboxId\":\"${SB_CROSS_B}\",\"ttlSeconds\":300}" >/dev/null
 
-if ! wait_sandbox_ready "${SB_INET}" 120 || ! wait_sandbox_ready "${SB_BLOCK}" 120; then
-  echo "Sandboxes did not become Ready in time"
+SESS_INET=$(curl_api POST "/v1/sessions" -d "{\"sandboxId\":\"${SB_INET}\"}" | jq -r '.sessionId // empty')
+SESS_BLOCK=$(curl_api POST "/v1/sessions" -d "{\"sandboxId\":\"${SB_BLOCK}\"}" | jq -r '.sessionId // empty')
+SESS_CROSS_A=$(curl_api POST "/v1/sessions" -d "{\"sandboxId\":\"${SB_CROSS_A}\"}" | jq -r '.sessionId // empty')
+SESS_CROSS_B=$(curl_api POST "/v1/sessions" -d "{\"sandboxId\":\"${SB_CROSS_B}\"}" | jq -r '.sessionId // empty')
+
+if ! wait_session_ready "${SESS_INET}" 120 || ! wait_session_ready "${SESS_BLOCK}" 120; then
+  echo "Sessions did not become Ready in time"
   exit 1
 fi
 
@@ -49,10 +52,8 @@ fi
 
 suite "Internet Access — Allowed"
 
-# TCP connect to example.com (93.184.216.34:80) — no external tools needed.
-# Skip if egress is blocked at the controller NetworkPolicy level.
-inet_out=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_INET}\",\"command\":\"bash\",
+inet_out=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_INET}\",\"sandboxId\":\"${SB_INET}\",\"command\":\"bash\",
        \"args\":[\"-c\",\"timeout 5 bash -c 'echo >/dev/tcp/93.184.216.34/80' 2>/dev/null && echo reached || echo blocked\"],
        \"timeoutSeconds\":15}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
@@ -71,8 +72,8 @@ fi
 
 suite "DNS Resolution"
 
-resolv_count=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_INET}\",\"command\":\"sh\",
+resolv_count=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_INET}\",\"sandboxId\":\"${SB_INET}\",\"command\":\"sh\",
        \"args\":[\"-c\",\"grep -c nameserver /etc/resolv.conf 2>/dev/null || echo 0\"],
        \"timeoutSeconds\":10}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
@@ -83,8 +84,8 @@ else
   fail "/etc/resolv.conf is empty or missing in allowInternetAccess=true sandbox"
 fi
 
-dns_ip=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_INET}\",\"command\":\"sh\",
+dns_ip=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_INET}\",\"sandboxId\":\"${SB_INET}\",\"command\":\"sh\",
        \"args\":[\"-c\",\"getent hosts example.com 2>/dev/null | head -1 | awk '{print \$1}' || echo blocked\"],
        \"timeoutSeconds\":15}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
@@ -103,15 +104,15 @@ fi
 
 suite "Internet Access — Blocked"
 
-block_out=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_BLOCK}\",\"command\":\"bash\",
+block_out=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_BLOCK}\",\"sandboxId\":\"${SB_BLOCK}\",\"command\":\"bash\",
        \"args\":[\"-c\",\"timeout 3 bash -c 'echo >/dev/tcp/8.8.8.8/53' 2>/dev/null && echo open || echo blocked\"],
        \"timeoutSeconds\":10}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
 assert_eq "Default sandbox cannot reach external IPs" "blocked" "${block_out}"
 
-block_http=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_BLOCK}\",\"command\":\"bash\",
+block_http=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_BLOCK}\",\"sandboxId\":\"${SB_BLOCK}\",\"command\":\"bash\",
        \"args\":[\"-c\",\"timeout 3 bash -c 'echo >/dev/tcp/93.184.216.34/80' 2>/dev/null && echo reached || echo blocked\"],
        \"timeoutSeconds\":10}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
@@ -119,53 +120,32 @@ assert_eq "Default sandbox cannot reach external HTTP (TCP)" "blocked" "${block_
 
 # -----------------------------------------------------------------------
 # Cross-sandbox network isolation
-# Sandbox A (internet-enabled) cannot reach sandbox B's loopback since
-# each sandbox runs in its own isolated network namespace.
 # -----------------------------------------------------------------------
 
 suite "Cross-Sandbox Network Isolation"
 
-wait_sandbox_ready "${SB_CROSS_A}" 60 || true
-wait_sandbox_ready "${SB_CROSS_B}" 60 || true
+wait_session_ready "${SESS_CROSS_A}" 60 || true
+wait_session_ready "${SESS_CROSS_B}" 60 || true
 
-# Verify each sandbox only sees its own lo interface (no bridge to other sandboxes)
-lo_a=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_A}\",\"command\":\"sh\",
-       \"args\":[\"-c\",\"ip -o link show | awk -F: '{print \$2}' | tr -d ' ' | sort | tr '\n' ',' | sed 's/,$//'\"],
-       \"timeoutSeconds\":10}" \
-  | jq -r '.stdout // empty' | tr -d '\r\n')
-
-lo_b=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_B}\",\"command\":\"sh\",
-       \"args\":[\"-c\",\"ip -o link show | awk -F: '{print \$2}' | tr -d ' ' | sort | tr '\n' ',' | sed 's/,$//'\"],
-       \"timeoutSeconds\":10}" \
-  | jq -r '.stdout // empty' | tr -d '\r\n')
-
-# Each sandbox has its own lo. The internet sandbox also has eth0/veth.
-# They must NOT share interfaces — their lo addresses differ.
-lo_addr_a=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_A}\",\"command\":\"sh\",
+lo_addr_a=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_CROSS_A}\",\"sandboxId\":\"${SB_CROSS_A}\",\"command\":\"sh\",
        \"args\":[\"-c\",\"ip addr show lo | grep 'inet ' | awk '{print \$2}'\"],
        \"timeoutSeconds\":10}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
 
-lo_addr_b=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_B}\",\"command\":\"sh\",
+lo_addr_b=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_CROSS_B}\",\"sandboxId\":\"${SB_CROSS_B}\",\"command\":\"sh\",
        \"args\":[\"-c\",\"ip addr show lo | grep 'inet ' | awk '{print \$2}'\"],
        \"timeoutSeconds\":10}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
 
-# Both have 127.0.0.1/8 but in separate namespaces — A cannot connect to B's lo.
-# Verify A cannot TCP-connect to B's loopback (only accessible inside B's netns).
-cross_connect=$(curl_api POST "/v1/exec" \
-  -d "{\"sessionId\":\"net\",\"sandboxId\":\"${SB_CROSS_A}\",\"command\":\"bash\",
+cross_connect=$(curl_api POST "/v1/sessions/exec" \
+  -d "{\"sessionId\":\"${SESS_CROSS_A}\",\"sandboxId\":\"${SB_CROSS_A}\",\"command\":\"bash\",
        \"args\":[\"-c\",\"timeout 2 bash -c 'echo >/dev/tcp/127.0.0.1/22' 2>/dev/null && echo open || echo blocked\"],
        \"timeoutSeconds\":8}" \
   | jq -r '.stdout // empty' | tr -d '\r\n')
 assert_eq "Sandbox A cannot reach sandbox B via loopback (different network namespaces)" "blocked" "${cross_connect}"
 
-# Confirm isolated sandbox B cannot reach internet (always enforced).
-# A's access depends on egress NetworkPolicy — only assert if we confirmed it reached.
 if [[ "${block_out}" == "blocked" ]]; then
   pass "Isolated sandbox has no external network access"
 else
@@ -176,6 +156,9 @@ fi
 # Cleanup
 # -----------------------------------------------------------------------
 
+for sess in "${SESS_INET}" "${SESS_BLOCK}" "${SESS_CROSS_A}" "${SESS_CROSS_B}"; do
+  curl_api DELETE "/v1/sessions/${sess}" >/dev/null 2>&1 || true
+done
 for sb in "${SB_INET}" "${SB_BLOCK}" "${SB_CROSS_A}" "${SB_CROSS_B}"; do
   curl_api DELETE "/v1/sandboxes/${sb}" >/dev/null 2>&1 || true
 done

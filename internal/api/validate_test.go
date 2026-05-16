@@ -30,7 +30,19 @@ func TestValidateSandboxCreate(t *testing.T) {
 	}
 	b.TTLSeconds = 200
 	if err := ValidateSandboxCreate(b, 100); err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected error for ttl over max")
+	}
+
+	// sandboxId too long
+	b2 := &SandboxCreateBody{SandboxID: strings.Repeat("x", 254), TTLSeconds: 10}
+	if err := ValidateSandboxCreate(b2, 100); err == nil {
+		t.Fatal("expected error for sandboxId > 253 chars")
+	}
+
+	// invalid k8s name format
+	b3 := &SandboxCreateBody{SandboxID: "UPPERCASE", TTLSeconds: 10}
+	if err := ValidateSandboxCreate(b3, 100); err == nil {
+		t.Fatal("expected error for invalid k8s name")
 	}
 }
 
