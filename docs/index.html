@@ -757,12 +757,6 @@ curl -sS \
                 <tr><td class="px-4 py-2 font-mono">vm.cloneNewTime</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Clone time namespace</td></tr>
                 <tr><td class="px-4 py-2 font-mono">network.enabled</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Enable network namespace</td></tr>
                 <tr><td class="px-4 py-2 font-mono">network.allowInternetAccess</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Disable network NS isolation</td></tr>
-                <tr><td class="px-4 py-2 font-mono">network.rules</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">ingress/egress allow/deny rules</td></tr>
-                <tr><td class="px-4 py-2 font-mono">network.ports</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{hostPort, guestPort, protocol}</td></tr>
-                <tr><td class="px-4 py-2 font-mono">network.dns</td><td class="px-4 py-2">object</td><td class="px-4 py-2 text-gray-500">nameservers, rebindProtection, queryTimeoutMs</td></tr>
-                <tr><td class="px-4 py-2 font-mono">network.secrets</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{envVar, value, allowedHosts[], allowedHostPatterns[], allowAnyHostDangerous}</td></tr>
-                <tr><td class="px-4 py-2 font-mono">network.maxConnections</td><td class="px-4 py-2">integer</td><td class="px-4 py-2 text-gray-500">Max outbound connections</td></tr>
-                <tr><td class="px-4 py-2 font-mono">network.trustHostCAs</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Mount host CA bundle</td></tr>
                 <tr><td class="px-4 py-2 font-mono">network.macvlan</td><td class="px-4 py-2">object</td><td class="px-4 py-2 text-gray-500">{interface, ip, netmask, gateway, mac} MACVLAN config</td></tr>
                 <tr><td class="px-4 py-2 font-mono">network.usePasta</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Use pasta instead of MACVLAN for networking</td></tr>
                 <tr><td class="px-4 py-2 font-mono">volumes</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{guestPath, type, hostPath, sizeMb, readonly}</td></tr>

@@ -315,70 +315,8 @@ func deepCopyNetworkConfig(in, out *api.SandboxNetworkConfig) {
 		b := *in.Enabled
 		out.Enabled = &b
 	}
-	if in.Rules != nil {
-		out.Rules = make([]api.NetworkRule, len(in.Rules))
-		for i := range in.Rules {
-			r := in.Rules[i]
-			if r.Protocols != nil {
-				r.Protocols = make([]string, len(in.Rules[i].Protocols))
-				copy(r.Protocols, in.Rules[i].Protocols)
-			}
-			if r.Ports != nil {
-				r.Ports = make([]uint16, len(in.Rules[i].Ports))
-				copy(r.Ports, in.Rules[i].Ports)
-			}
-			if r.PortRanges != nil {
-				r.PortRanges = make([]api.PortRange, len(in.Rules[i].PortRanges))
-				copy(r.PortRanges, in.Rules[i].PortRanges)
-			}
-			if r.Domains != nil {
-				r.Domains = make([]string, len(in.Rules[i].Domains))
-				copy(r.Domains, in.Rules[i].Domains)
-			}
-			if r.DomainSuffixes != nil {
-				r.DomainSuffixes = make([]string, len(in.Rules[i].DomainSuffixes))
-				copy(r.DomainSuffixes, in.Rules[i].DomainSuffixes)
-			}
-			if r.CIDRs != nil {
-				r.CIDRs = make([]string, len(in.Rules[i].CIDRs))
-				copy(r.CIDRs, in.Rules[i].CIDRs)
-			}
-			if r.Groups != nil {
-				r.Groups = make([]string, len(in.Rules[i].Groups))
-				copy(r.Groups, in.Rules[i].Groups)
-			}
-			out.Rules[i] = r
-		}
-	}
-	if in.Ports != nil {
-		out.Ports = make([]api.PortMapping, len(in.Ports))
-		copy(out.Ports, in.Ports)
-	}
-	if in.DNS != nil {
-		d := *in.DNS
-		if in.DNS.Nameservers != nil {
-			d.Nameservers = make([]string, len(in.DNS.Nameservers))
-			copy(d.Nameservers, in.DNS.Nameservers)
-		}
-		if in.DNS.RebindProtection != nil {
-			b := *in.DNS.RebindProtection
-			d.RebindProtection = &b
-		}
-		out.DNS = &d
-	}
-	if in.Secrets != nil {
-		out.Secrets = make([]api.NetworkSecret, len(in.Secrets))
-		for i := range in.Secrets {
-			s := in.Secrets[i]
-			if s.AllowedHosts != nil {
-				s.AllowedHosts = make([]string, len(in.Secrets[i].AllowedHosts))
-				copy(s.AllowedHosts, in.Secrets[i].AllowedHosts)
-			}
-			if s.AllowedHostPatterns != nil {
-				s.AllowedHostPatterns = make([]string, len(in.Secrets[i].AllowedHostPatterns))
-				copy(s.AllowedHostPatterns, in.Secrets[i].AllowedHostPatterns)
-			}
-			out.Secrets[i] = s
-		}
+	if in.Macvlan != nil {
+		mv := *in.Macvlan
+		out.Macvlan = &mv
 	}
 }
