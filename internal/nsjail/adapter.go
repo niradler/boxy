@@ -101,19 +101,18 @@ func (a *NsjailAdapter) Create(ctx context.Context, req *api.SandboxCreateBody) 
 	}
 
 	sb := &sandbox{req: *req, workspace: workspace, binDir: binDir}
-	a.sandboxes[req.SandboxID] = sb
 
 	if req.SetupScript != "" {
 		a.mu.Unlock()
 		err := a.runHookScript(ctx, req.SetupScript, sb)
 		a.mu.Lock()
 		if err != nil {
-			delete(a.sandboxes, req.SandboxID)
 			_ = os.RemoveAll(sandboxBase)
 			return errInternal(fmt.Sprintf("setup script failed: %v", err))
 		}
 	}
 
+	a.sandboxes[req.SandboxID] = sb
 	return nil
 }
 
@@ -462,6 +461,12 @@ func (a *NsjailAdapter) validateCreateRequest(req *api.SandboxCreateBody) error 
 	for _, bin := range req.AllowedBinaries {
 		if bin == "" || strings.Contains(bin, "/") || strings.Contains(bin, "..") {
 			return errBadRequest(fmt.Sprintf("allowed_binaries entry %q must be a plain filename", bin))
+		}
+	}
+
+	for k := range req.ScriptEnv {
+		if strings.Contains(k, "=") {
+			return errBadRequest(fmt.Sprintf("scriptEnv key %q must not contain '='", k))
 		}
 	}
 

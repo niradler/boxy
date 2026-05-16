@@ -502,7 +502,7 @@ Sandboxes support optional setup and teardown scripts that run on the controller
 
 **Hook contract:**
 
-- **stdin:** full `SandboxCreateBody` as JSON (setup script only)
+- **stdin:** full `SandboxCreateBody` as JSON (both setup and teardown scripts)
 - **env vars:** `BOXY_SANDBOX_ID`, `BOXY_SANDBOX_ROOT`, `BOXY_WORKSPACE`, plus all `scriptEnv` key-value pairs
 - **exit 0:** success; **exit non-zero:** sandbox creation fails, resources cleaned up
 

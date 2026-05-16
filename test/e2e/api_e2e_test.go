@@ -479,6 +479,13 @@ func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.Exec
 	return out
 }
 
+func ctrlPod() string {
+	if p := os.Getenv("BOXY_CTRL_POD"); p != "" {
+		return p
+	}
+	return "boxy-ctrl-0"
+}
+
 func kubectlExec(t *testing.T, pod, namespace, command string) string {
 	t.Helper()
 	out, err := exec.Command("kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", command).CombinedOutput()
@@ -509,10 +516,10 @@ func TestSetupScript_WritesMarkerFile(t *testing.T) {
 	sandboxID := "e2e-hook-marker-" + ts
 
 	scriptPath := "/tmp/boxy-test-setup-" + ts + ".sh"
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\necho hook-was-here > \"$BOXY_WORKSPACE/hook-marker.txt\"\\n' > "+scriptPath+" && chmod +x "+scriptPath)
 	t.Cleanup(func() {
-		kubectlExec(t, "boxy-ctrl-0", "boxy", "rm -f "+scriptPath)
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
 	})
 
 	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
@@ -538,10 +545,10 @@ func TestSetupScript_ScriptEnvPerSandbox(t *testing.T) {
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
 
 	scriptPath := "/tmp/boxy-test-env-" + ts + ".sh"
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\necho \"$CUSTOMER_TIER\" > \"$BOXY_WORKSPACE/tier.txt\"\\n' > "+scriptPath+" && chmod +x "+scriptPath)
 	t.Cleanup(func() {
-		kubectlExec(t, "boxy-ctrl-0", "boxy", "rm -f "+scriptPath)
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
 	})
 
 	sandboxA := "e2e-hook-env-a-" + ts
@@ -586,10 +593,10 @@ func TestSetupScript_ReadsStdinConfig(t *testing.T) {
 	sandboxID := "e2e-hook-stdin-" + ts
 
 	scriptPath := "/tmp/boxy-test-stdin-" + ts + ".sh"
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\ncat > \"$BOXY_WORKSPACE/config-dump.json\"\\n' > "+scriptPath+" && chmod +x "+scriptPath)
 	t.Cleanup(func() {
-		kubectlExec(t, "boxy-ctrl-0", "boxy", "rm -f "+scriptPath)
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
 	})
 
 	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
@@ -626,10 +633,10 @@ func TestSetupScript_FailureBlocksSession(t *testing.T) {
 	sandboxID := "e2e-hook-fail-" + ts
 
 	scriptPath := "/tmp/boxy-test-fail-" + ts + ".sh"
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\nexit 1\\n' > "+scriptPath+" && chmod +x "+scriptPath)
 	t.Cleanup(func() {
-		kubectlExec(t, "boxy-ctrl-0", "boxy", "rm -f "+scriptPath)
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
 	})
 
 	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
@@ -689,12 +696,12 @@ func TestTeardownScript_Runs(t *testing.T) {
 	setupPath := "/tmp/boxy-test-td-setup-" + ts + ".sh"
 	teardownPath := "/tmp/boxy-test-td-tear-" + ts + ".sh"
 
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\necho setup-done > \"$BOXY_WORKSPACE/setup.txt\"\\n' > "+setupPath+" && chmod +x "+setupPath)
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\necho teardown-ran > "+markerFile+"\\n' > "+teardownPath+" && chmod +x "+teardownPath)
 	t.Cleanup(func() {
-		kubectlExec(t, "boxy-ctrl-0", "boxy", "rm -f "+setupPath+" "+teardownPath+" "+markerFile)
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+setupPath+" "+teardownPath+" "+markerFile)
 	})
 
 	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
@@ -719,7 +726,7 @@ func TestTeardownScript_Runs(t *testing.T) {
 
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		result, err := exec.Command("kubectl", "-n", "boxy", "exec", "boxy-ctrl-0", "--",
+		result, err := exec.Command("kubectl", "-n", "boxy", "exec", ctrlPod(), "--",
 			"sh", "-c", "cat "+markerFile+" 2>/dev/null || echo missing").CombinedOutput()
 		if err == nil && strings.TrimSpace(string(result)) == "teardown-ran" {
 			return
@@ -737,14 +744,14 @@ func TestSetupScript_NetworkEgressRules(t *testing.T) {
 	setupPath := "/tmp/boxy-test-netsetup-" + ts + ".sh"
 	teardownPath := "/tmp/boxy-test-nettear-" + ts + ".sh"
 
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\niptables -A OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP\\n' > "+setupPath+" && chmod +x "+setupPath)
-	kubectlExec(t, "boxy-ctrl-0", "boxy",
+	kubectlExec(t, ctrlPod(), "boxy",
 		"printf '#!/bin/sh\\niptables -D OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP 2>/dev/null\\n' > "+teardownPath+" && chmod +x "+teardownPath)
 	t.Cleanup(func() {
-		exec.Command("kubectl", "-n", "boxy", "exec", "boxy-ctrl-0", "--",
+		exec.Command("kubectl", "-n", "boxy", "exec", ctrlPod(), "--",
 			"sh", "-c", "iptables -D OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP 2>/dev/null").Run()
-		kubectlExec(t, "boxy-ctrl-0", "boxy", "rm -f "+setupPath+" "+teardownPath)
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+setupPath+" "+teardownPath)
 	})
 
 	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
