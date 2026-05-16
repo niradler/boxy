@@ -47,6 +47,9 @@ type SandboxSpec struct {
 	Network         *api.SandboxNetworkConfig `json:"network,omitempty"`
 	Volumes         []api.VolumeMount         `json:"volumes,omitempty"`
 	Patches         []api.SandboxPatch        `json:"patches,omitempty"`
+	SetupScript     string                    `json:"setupScript,omitempty"`
+	TeardownScript  string                    `json:"teardownScript,omitempty"`
+	ScriptEnv       map[string]string         `json:"scriptEnv,omitempty"`
 }
 
 const (
@@ -69,8 +72,8 @@ const (
 type Session struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec   SessionSpec   `json:"spec,omitempty"`
-	Status SessionStatus `json:"status,omitempty"`
+	Spec              SessionSpec   `json:"spec,omitempty"`
+	Status            SessionStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

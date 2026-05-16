@@ -3,6 +3,7 @@ package nsjail
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -99,7 +100,19 @@ func (a *NsjailAdapter) Create(ctx context.Context, req *api.SandboxCreateBody) 
 		}
 	}
 
-	a.sandboxes[req.SandboxID] = &sandbox{req: *req, workspace: workspace, binDir: binDir}
+	sb := &sandbox{req: *req, workspace: workspace, binDir: binDir}
+
+	if req.SetupScript != "" {
+		a.mu.Unlock()
+		err := a.runHookScript(ctx, req.SetupScript, sb)
+		a.mu.Lock()
+		if err != nil {
+			_ = os.RemoveAll(sandboxBase)
+			return errInternal(fmt.Sprintf("setup script failed: %v", err))
+		}
+	}
+
+	a.sandboxes[req.SandboxID] = sb
 	return nil
 }
 
@@ -227,9 +240,41 @@ func (a *NsjailAdapter) Delete(ctx context.Context, sandboxID string) error {
 		return errNotFound(sandboxID)
 	}
 
+	if sb.req.TeardownScript != "" {
+		if err := a.runHookScript(ctx, sb.req.TeardownScript, sb); err != nil {
+			slog.Warn("teardown script failed", "sandboxId", sandboxID, "err", err)
+		}
+	}
+
 	base := filepath.Dir(sb.workspace)
 	if err := os.RemoveAll(base); err != nil {
 		slog.Warn("sandbox cleanup failed", "sandboxId", sandboxID, "path", base, "err", err)
+	}
+	return nil
+}
+
+func (a *NsjailAdapter) runHookScript(ctx context.Context, script string, sb *sandbox) error {
+	configJSON, err := json.Marshal(sb.req)
+	if err != nil {
+		return fmt.Errorf("marshal sandbox config: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, script)
+	cmd.Stdin = bytes.NewReader(configJSON)
+	cmd.Env = append(os.Environ(),
+		"BOXY_SANDBOX_ID="+sb.req.SandboxID,
+		"BOXY_SANDBOX_ROOT="+filepath.Dir(sb.workspace),
+		"BOXY_WORKSPACE="+sb.workspace,
+	)
+	for k, v := range sb.req.ScriptEnv {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %s", err, stderr.String())
 	}
 	return nil
 }
@@ -416,6 +461,12 @@ func (a *NsjailAdapter) validateCreateRequest(req *api.SandboxCreateBody) error 
 	for _, bin := range req.AllowedBinaries {
 		if bin == "" || strings.Contains(bin, "/") || strings.Contains(bin, "..") {
 			return errBadRequest(fmt.Sprintf("allowed_binaries entry %q must be a plain filename", bin))
+		}
+	}
+
+	for k := range req.ScriptEnv {
+		if strings.Contains(k, "=") {
+			return errBadRequest(fmt.Sprintf("scriptEnv key %q must not contain '='", k))
 		}
 	}
 

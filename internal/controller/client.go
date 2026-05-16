@@ -120,6 +120,9 @@ type CreateSandboxReq struct {
 	Volumes         []api.VolumeMount         `json:"volumes,omitempty"`
 	Patches         []api.SandboxPatch        `json:"patches,omitempty"`
 	TTLSeconds      int                       `json:"ttl_seconds,omitempty"`
+	SetupScript     string                    `json:"setup_script,omitempty"`
+	TeardownScript  string                    `json:"teardown_script,omitempty"`
+	ScriptEnv       map[string]string         `json:"script_env,omitempty"`
 }
 
 type ExecReq struct {

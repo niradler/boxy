@@ -86,7 +86,7 @@ func testSession(name, sessionID, sandboxID, ctrlAddr string, ctrlPort int32, ph
 			Name:      name,
 			Namespace: "default",
 			Labels: map[string]string{
-				api.LabelSessionID:   sessionID,
+				api.LabelSessionID:    sessionID,
 				boxyv1.LabelSandboxID: sandboxID,
 			},
 		},

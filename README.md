@@ -48,6 +48,48 @@ Every sandbox gets:
 - **cgroup memory cap** — `vm.memoryMb` enforced via nsjail `--cgroup_mem_max`.
 - **POSIX rlimits** — `as`, `core`, `cpu`, `fsize`, `nofile`, `nproc`, `stack` configurable per sandbox.
 
+## Lifecycle hooks
+
+Sandboxes support optional setup and teardown scripts that run on the controller at create and delete time. Scripts are general-purpose -- use them for session restoration, file staging, network policy, proxy setup, or any custom logic.
+
+**Hook contract:**
+
+- `setupScript` runs after provisioning, receives full sandbox config as JSON on stdin
+- `teardownScript` runs before cleanup on deletion
+- Both get env vars: `BOXY_SANDBOX_ID`, `BOXY_WORKSPACE`, plus all `scriptEnv` key-value pairs
+- Exit non-zero from `setupScript` fails the sandbox creation and cleans up
+
+```bash
+# Create a sandbox with a setup script and per-sandbox env
+curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{
+    "sandboxId": "demo-hooks",
+    "ttlSeconds": 3600,
+    "setupScript": "/opt/boxy/scripts/setup.sh",
+    "teardownScript": "/opt/boxy/scripts/teardown.sh",
+    "scriptEnv": {"CUSTOMER_TIER": "premium", "REGION": "us-east-1"},
+    "network": {"allowInternetAccess": true}
+  }' \
+  $BASE/v1/sandboxes
+```
+
+Example setup scripts:
+
+```bash
+# Restore workspace from S3
+aws s3 sync s3://sessions/$BOXY_SANDBOX_ID/ $BOXY_WORKSPACE/
+
+# Apply iptables egress rules per sandbox
+iptables -A OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP
+
+# Pre-install packages based on tier
+if [ "$CUSTOMER_TIER" = "premium" ]; then
+  cp -r /opt/boxy/premium-packages/* $BOXY_WORKSPACE/
+fi
+```
+
+Scripts must be pre-baked on the controller image or mounted via a volume. The controller image includes `iptables` and `iproute2` for network rule scripts.
+
 ## Quick start
 
 ### Prerequisites
@@ -126,6 +168,10 @@ Create a sandbox config. Sessions created from this config become running sandbo
 | `vm` | object | Resource and identity config — see below. |
 | `network` | object | Network policy — see below. |
 | `volumes` | array | Extra mounts inside the sandbox. |
+| `patches` | array | Files to write/symlink into workspace before exec. |
+| `setupScript` | string | Path to executable on controller. Runs after provisioning. Exit non-zero fails sandbox creation. |
+| `teardownScript` | string | Path to executable on controller. Runs before cleanup on deletion. |
+| `scriptEnv` | map | Custom env vars injected into setup/teardown scripts (e.g. customer ID, tier, region). |
 
 **`vm` fields:**
 

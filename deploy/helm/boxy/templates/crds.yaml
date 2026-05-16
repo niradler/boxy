@@ -132,96 +132,6 @@ spec:
                       type: boolean
                     allowInternetAccess:
                       type: boolean
-                    rules:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          direction:
-                            type: string
-                            enum: [ingress, egress]
-                          action:
-                            type: string
-                            enum: [allow, deny]
-                          protocols:
-                            type: array
-                            items:
-                              type: string
-                          ports:
-                            type: array
-                            items:
-                              type: integer
-                          portRanges:
-                            type: array
-                            items:
-                              type: object
-                              properties:
-                                start:
-                                  type: integer
-                                end:
-                                  type: integer
-                          domains:
-                            type: array
-                            items:
-                              type: string
-                          domainSuffixes:
-                            type: array
-                            items:
-                              type: string
-                          cidrs:
-                            type: array
-                            items:
-                              type: string
-                          groups:
-                            type: array
-                            items:
-                              type: string
-                    ports:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          hostPort:
-                            type: integer
-                          guestPort:
-                            type: integer
-                          protocol:
-                            type: string
-                    dns:
-                      type: object
-                      properties:
-                        nameservers:
-                          type: array
-                          items:
-                            type: string
-                        rebindProtection:
-                          type: boolean
-                        queryTimeoutMs:
-                          type: integer
-                    secrets:
-                      type: array
-                      items:
-                        type: object
-                        required: [envVar, value]
-                        properties:
-                          envVar:
-                            type: string
-                          value:
-                            type: string
-                          allowedHosts:
-                            type: array
-                            items:
-                              type: string
-                          allowedHostPatterns:
-                            type: array
-                            items:
-                              type: string
-                          allowAnyHostDangerous:
-                            type: boolean
-                    maxConnections:
-                      type: integer
-                    trustHostCAs:
-                      type: boolean
                     macvlan:
                       type: object
                       properties:
@@ -277,6 +187,14 @@ spec:
                         type: integer
                       replace:
                         type: boolean
+                setupScript:
+                  type: string
+                teardownScript:
+                  type: string
+                scriptEnv:
+                  type: object
+                  additionalProperties:
+                    type: string
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

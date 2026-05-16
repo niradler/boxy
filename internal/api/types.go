@@ -55,51 +55,8 @@ type MacvlanConfig struct {
 type SandboxNetworkConfig struct {
 	Enabled             *bool          `json:"enabled,omitempty"`
 	AllowInternetAccess bool           `json:"allowInternetAccess,omitempty"`
-	Rules               []NetworkRule  `json:"rules,omitempty"`
-	Ports               []PortMapping  `json:"ports,omitempty"`
-	DNS                 *DNSConfig     `json:"dns,omitempty"`
-	Secrets             []NetworkSecret `json:"secrets,omitempty"`
-	MaxConnections      int            `json:"maxConnections,omitempty"`
-	TrustHostCAs        bool           `json:"trustHostCAs,omitempty"`
 	Macvlan             *MacvlanConfig `json:"macvlan,omitempty"`
 	UsePasta            bool           `json:"usePasta,omitempty"`
-}
-
-type NetworkRule struct {
-	Direction      string      `json:"direction"`
-	Action         string      `json:"action"`
-	Protocols      []string    `json:"protocols,omitempty"`
-	Ports          []uint16    `json:"ports,omitempty"`
-	PortRanges     []PortRange `json:"portRanges,omitempty"`
-	Domains        []string    `json:"domains,omitempty"`
-	DomainSuffixes []string    `json:"domainSuffixes,omitempty"`
-	CIDRs          []string    `json:"cidrs,omitempty"`
-	Groups         []string    `json:"groups,omitempty"`
-}
-
-type PortRange struct {
-	Start uint16 `json:"start"`
-	End   uint16 `json:"end"`
-}
-
-type PortMapping struct {
-	HostPort  uint16 `json:"hostPort"`
-	GuestPort uint16 `json:"guestPort"`
-	Protocol  string `json:"protocol,omitempty"`
-}
-
-type DNSConfig struct {
-	Nameservers      []string `json:"nameservers,omitempty"`
-	RebindProtection *bool    `json:"rebindProtection,omitempty"`
-	QueryTimeoutMs   int      `json:"queryTimeoutMs,omitempty"`
-}
-
-type NetworkSecret struct {
-	EnvVar                string   `json:"envVar"`
-	Value                 string   `json:"value"`
-	AllowedHosts          []string `json:"allowedHosts,omitempty"`
-	AllowedHostPatterns   []string `json:"allowedHostPatterns,omitempty"`
-	AllowAnyHostDangerous bool     `json:"allowAnyHostDangerous,omitempty"`
 }
 
 type VolumeMount struct {
@@ -131,6 +88,9 @@ type SandboxCreateBody struct {
 	Network         *SandboxNetworkConfig `json:"network,omitempty"`
 	Volumes         []VolumeMount         `json:"volumes,omitempty"`
 	Patches         []SandboxPatch        `json:"patches,omitempty"`
+	SetupScript     string                `json:"setupScript,omitempty"`
+	TeardownScript  string                `json:"teardownScript,omitempty"`
+	ScriptEnv       map[string]string     `json:"scriptEnv,omitempty"`
 }
 
 type ErrorBody struct {

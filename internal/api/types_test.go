@@ -20,10 +20,8 @@ func TestSandboxCreateBody_FullVMSurface(t *testing.T) {
             "scripts":[{"name":"setup","content":"#!/bin/sh\necho ready"}]
         },
         "network":{
-            "ports":[{"hostPort":8080,"guestPort":80,"protocol":"tcp"}],
-            "dns":{"nameservers":["1.1.1.1:53"],"queryTimeoutMs":3000},
-            "secrets":[{"envVar":"AWS_TOKEN","value":"secret","allowedHosts":["sts.amazonaws.com"]}],
-            "rules":[{"direction":"egress","action":"deny","groups":["metadata"]}]
+            "allowInternetAccess":true,
+            "macvlan":{"interface":"eth0","ip":"10.0.0.2"}
         },
         "volumes":[{"guestPath":"/data","type":"tmpfs","sizeMb":512}],
         "patches":[{"type":"text","path":"/etc/app.conf","content":"key=val","mode":420}]
@@ -41,17 +39,11 @@ func TestSandboxCreateBody_FullVMSurface(t *testing.T) {
 	if len(b.VM.Scripts) != 1 || b.VM.Scripts[0].Name != "setup" {
 		t.Fatalf("Scripts: %v", b.VM.Scripts)
 	}
-	if len(b.Network.Ports) != 1 || b.Network.Ports[0].HostPort != 8080 {
-		t.Fatalf("Ports: %v", b.Network.Ports)
+	if !b.Network.AllowInternetAccess {
+		t.Fatal("AllowInternetAccess must be true")
 	}
-	if b.Network.DNS == nil || b.Network.DNS.QueryTimeoutMs != 3000 {
-		t.Fatalf("DNS: %+v", b.Network.DNS)
-	}
-	if len(b.Network.Secrets) != 1 || b.Network.Secrets[0].EnvVar != "AWS_TOKEN" {
-		t.Fatalf("Secrets: %v", b.Network.Secrets)
-	}
-	if len(b.Network.Rules) != 1 || b.Network.Rules[0].Action != "deny" {
-		t.Fatalf("Rules: %v", b.Network.Rules)
+	if b.Network.Macvlan == nil || b.Network.Macvlan.Interface != "eth0" || b.Network.Macvlan.IP != "10.0.0.2" {
+		t.Fatalf("Macvlan: %+v", b.Network.Macvlan)
 	}
 	if len(b.Volumes) != 1 || b.Volumes[0].Type != "tmpfs" {
 		t.Fatalf("Volumes: %v", b.Volumes)

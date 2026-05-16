@@ -288,14 +288,16 @@ type Adapter interface {
 ```
 SandboxSpec
   sandboxId         string             Unique ID (client-supplied or generated)
-  sessionId         string             Session correlation
-  owner             string             Ownership label
   ttlSeconds        int                Sliding TTL; 0 = no expiry
   env               map[string]string  Sandbox-level env vars (max 64 keys)
   allowedBinaries   []string           Binaries bind-mounted read-only into sandbox
   vm                VMConfig           memoryMb, rlimits, workdir, hostname, user, rootfs image
-  network           NetworkConfig      enabled, allowInternetAccess
+  network           NetworkConfig      allowInternetAccess, macvlan, usePasta
   volumes           []VolumeMount      Extra mounts (tmpfs, bind)
+  patches           []SandboxPatch     Files to write/symlink into workspace
+  setupScript       string             Path to executable on controller; runs after provisioning
+  teardownScript    string             Path to executable on controller; runs before cleanup
+  scriptEnv         map[string]string  Custom env vars injected into setup/teardown scripts
 
 SandboxStatus
   phase             Pending | Creating | Running | Deleting | Terminated
@@ -485,6 +487,42 @@ Sandbox-level network isolation is enforced by nsjail (isolated network namespac
 | `allowInternetAccess: true` | `disable_clone_newnet: true` in proto — sandbox inherits the pod's host network |
 | `macvlan: { interface: "eth0", ... }` | Clones a MACVLAN interface into the sandbox network namespace with an optional static IP/gateway |
 | `usePasta: true` | Uses pasta userland networking — sandbox gets NAT'd internet access without `NET_ADMIN` |
+
+### Lifecycle Hooks
+
+Sandboxes support optional setup and teardown scripts that run on the controller at create and delete time. These are general-purpose hooks -- not limited to networking -- and can be used for session restoration, file staging, network policy, proxy configuration, or any custom logic.
+
+**Fields on `SandboxCreateBody` / `SandboxSpec`:**
+
+| Field | Description |
+| ----- | ----------- |
+| `setupScript` | Path to an executable on the controller filesystem. Runs after all sandbox resources are provisioned, before success is returned. Exit non-zero fails the sandbox creation. |
+| `teardownScript` | Path to an executable on the controller filesystem. Runs before sandbox resources are cleaned up on deletion. |
+| `scriptEnv` | Map of custom env vars injected into both scripts. Set from the Sandbox CRD, allowing per-sandbox identifiers (customer ID, tier, region, policy name). |
+
+**Hook contract:**
+
+- **stdin:** full `SandboxCreateBody` as JSON (both setup and teardown scripts)
+- **env vars:** `BOXY_SANDBOX_ID`, `BOXY_SANDBOX_ROOT`, `BOXY_WORKSPACE`, plus all `scriptEnv` key-value pairs
+- **exit 0:** success; **exit non-zero:** sandbox creation fails, resources cleaned up
+
+Scripts run as the controller process (root), not inside the sandbox. The operator/CRD author controls which scripts are referenced -- there is no user-facing script upload.
+
+**Example use cases:**
+
+```bash
+# Restore workspace from a previous session
+aws s3 sync s3://sessions/$BOXY_SANDBOX_ID/ $BOXY_WORKSPACE/
+
+# Apply iptables egress rules (requires allowInternetAccess: true)
+iptables -A OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP
+
+# Pre-install packages
+cp -r /opt/boxy/preinstalled-packages/* $BOXY_WORKSPACE/
+
+# Per-sandbox policy using scriptEnv
+echo "Tier: $CUSTOMER_TIER" > $BOXY_WORKSPACE/.config
+```
 
 ---
 

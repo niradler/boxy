@@ -406,6 +406,9 @@ func (s *Server) createSandboxFromBody(ctx context.Context, body *api.SandboxCre
 			Network:         body.Network,
 			Volumes:         body.Volumes,
 			Patches:         body.Patches,
+			SetupScript:     body.SetupScript,
+			TeardownScript:  body.TeardownScript,
+			ScriptEnv:       body.ScriptEnv,
 		},
 	}
 
@@ -432,7 +435,6 @@ func (s *Server) EnsureDefaultSandbox(ctx context.Context) error {
 	s.log.Info("default sandbox created", "sandboxId", id)
 	return nil
 }
-
 
 func (s *Server) lookupSession(ctx context.Context, sessionID string) (*boxyv1.Session, error) {
 	var list boxyv1.SessionList

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -476,4 +477,312 @@ func postExec(t *testing.T, base, tok string, body api.ExecRequestBody) api.Exec
 		t.Fatal(err)
 	}
 	return out
+}
+
+func ctrlPod() string {
+	if p := os.Getenv("BOXY_CTRL_POD"); p != "" {
+		return p
+	}
+	return "boxy-ctrl-0"
+}
+
+func kubectlExec(t *testing.T, pod, namespace, command string) string {
+	t.Helper()
+	out, err := exec.Command("kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", command).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl exec %s: %v\n%s", command, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func createSessionForSandbox(t *testing.T, base, tok, sandboxID string) string {
+	t.Helper()
+	warmup := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, Command: "echo", Args: []string{"hi"}, TimeoutSeconds: 120,
+	})
+	warmup.Body.Close()
+	sid := warmup.Header.Get("X-Boxy-Session-Id")
+	if sid == "" {
+		t.Fatal("X-Boxy-Session-Id missing")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sid) })
+	waitSessionReady(t, base, tok, sid)
+	return sid
+}
+
+func TestSetupScript_WritesMarkerFile(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-hook-marker-" + ts
+
+	scriptPath := "/tmp/boxy-test-setup-" + ts + ".sh"
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\necho hook-was-here > \"$BOXY_WORKSPACE/hook-marker.txt\"\\n' > "+scriptPath+" && chmod +x "+scriptPath)
+	t.Cleanup(func() {
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
+	})
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:   sandboxID,
+		TTLSeconds:  120,
+		SetupScript: scriptPath,
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	out := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, SessionID: sessionID,
+		Command: "cat", Args: []string{"/workspace/hook-marker.txt"},
+		TimeoutSeconds: 10,
+	})
+	if strings.TrimSpace(out.Stdout) != "hook-was-here" {
+		t.Fatalf("setup script did not write marker: stdout=%q stderr=%q", out.Stdout, out.Stderr)
+	}
+}
+
+func TestSetupScript_ScriptEnvPerSandbox(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	scriptPath := "/tmp/boxy-test-env-" + ts + ".sh"
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\necho \"$CUSTOMER_TIER\" > \"$BOXY_WORKSPACE/tier.txt\"\\n' > "+scriptPath+" && chmod +x "+scriptPath)
+	t.Cleanup(func() {
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
+	})
+
+	sandboxA := "e2e-hook-env-a-" + ts
+	sandboxB := "e2e-hook-env-b-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID: sandboxA, TTLSeconds: 120,
+		SetupScript: scriptPath,
+		ScriptEnv:   map[string]string{"CUSTOMER_TIER": "premium"},
+	})
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID: sandboxB, TTLSeconds: 120,
+		SetupScript: scriptPath,
+		ScriptEnv:   map[string]string{"CUSTOMER_TIER": "free"},
+	})
+
+	sidA := createSessionForSandbox(t, base, tok, sandboxA)
+	sidB := createSessionForSandbox(t, base, tok, sandboxB)
+
+	outA := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxA, SessionID: sidA,
+		Command: "cat", Args: []string{"/workspace/tier.txt"},
+		TimeoutSeconds: 10,
+	})
+	outB := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxB, SessionID: sidB,
+		Command: "cat", Args: []string{"/workspace/tier.txt"},
+		TimeoutSeconds: 10,
+	})
+
+	if strings.TrimSpace(outA.Stdout) != "premium" {
+		t.Fatalf("sandbox A: expected premium, got %q", outA.Stdout)
+	}
+	if strings.TrimSpace(outB.Stdout) != "free" {
+		t.Fatalf("sandbox B: expected free, got %q", outB.Stdout)
+	}
+}
+
+func TestSetupScript_ReadsStdinConfig(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-hook-stdin-" + ts
+
+	scriptPath := "/tmp/boxy-test-stdin-" + ts + ".sh"
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\ncat > \"$BOXY_WORKSPACE/config-dump.json\"\\n' > "+scriptPath+" && chmod +x "+scriptPath)
+	t.Cleanup(func() {
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
+	})
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:   sandboxID,
+		TTLSeconds:  120,
+		SetupScript: scriptPath,
+		Env:         map[string]string{"APP_MODE": "test"},
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	out := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, SessionID: sessionID,
+		Command: "sh", Args: []string{"-c", "cat /workspace/config-dump.json"},
+		TimeoutSeconds: 10,
+	})
+
+	var dumped map[string]interface{}
+	if err := json.Unmarshal([]byte(out.Stdout), &dumped); err != nil {
+		t.Fatalf("stdin config is not valid JSON: %v\nstdout: %s", err, out.Stdout)
+	}
+	envMap, _ := dumped["env"].(map[string]interface{})
+	if envMap["APP_MODE"] != "test" {
+		t.Fatalf("config env mismatch: got %v", envMap)
+	}
+	if dumped["setupScript"] != scriptPath {
+		t.Fatalf("config setupScript mismatch: got %v", dumped["setupScript"])
+	}
+}
+
+func TestSetupScript_FailureBlocksSession(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-hook-fail-" + ts
+
+	scriptPath := "/tmp/boxy-test-fail-" + ts + ".sh"
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\nexit 1\\n' > "+scriptPath+" && chmod +x "+scriptPath)
+	t.Cleanup(func() {
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+scriptPath)
+	})
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:   sandboxID,
+		TTLSeconds:  120,
+		SetupScript: scriptPath,
+	})
+
+	execPayload, _ := json.Marshal(api.ExecRequestBody{
+		SandboxID: sandboxID, Command: "echo", Args: []string{"hi"}, TimeoutSeconds: 30,
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/sessions/exec", bytes.NewReader(execPayload))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := httpClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := res.Header.Get("X-Boxy-Session-Id")
+	res.Body.Close()
+
+	if sid == "" {
+		if res.StatusCode >= 400 {
+			return
+		}
+		t.Fatal("no session ID and no error")
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, base+"/v1/sessions/"+sid, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := httpClient().Do(req)
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		var sess api.SessionResponseBody
+		json.NewDecoder(resp.Body).Decode(&sess)
+		resp.Body.Close()
+		if sess.Ready {
+			t.Fatal("session should not become ready when setup script fails")
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func TestTeardownScript_Runs(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-hook-teardown-" + ts
+	markerFile := "/tmp/boxy-teardown-marker-" + ts
+
+	setupPath := "/tmp/boxy-test-td-setup-" + ts + ".sh"
+	teardownPath := "/tmp/boxy-test-td-tear-" + ts + ".sh"
+
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\necho setup-done > \"$BOXY_WORKSPACE/setup.txt\"\\n' > "+setupPath+" && chmod +x "+setupPath)
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\necho teardown-ran > "+markerFile+"\\n' > "+teardownPath+" && chmod +x "+teardownPath)
+	t.Cleanup(func() {
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+setupPath+" "+teardownPath+" "+markerFile)
+	})
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:      sandboxID,
+		TTLSeconds:     120,
+		SetupScript:    setupPath,
+		TeardownScript: teardownPath,
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	out := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, SessionID: sessionID,
+		Command: "cat", Args: []string{"/workspace/setup.txt"},
+		TimeoutSeconds: 10,
+	})
+	if strings.TrimSpace(out.Stdout) != "setup-done" {
+		t.Fatalf("setup script didn't run: %q", out.Stdout)
+	}
+
+	deleteSession(t, base, tok, sessionID)
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := exec.Command("kubectl", "-n", "boxy", "exec", ctrlPod(), "--",
+			"sh", "-c", "cat "+markerFile+" 2>/dev/null || echo missing").CombinedOutput()
+		if err == nil && strings.TrimSpace(string(result)) == "teardown-ran" {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatal("teardown script did not run within 15s of session deletion")
+}
+
+func TestSetupScript_NetworkEgressRules(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-hook-netblock-" + ts
+
+	setupPath := "/tmp/boxy-test-netsetup-" + ts + ".sh"
+	teardownPath := "/tmp/boxy-test-nettear-" + ts + ".sh"
+
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\niptables -A OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP\\n' > "+setupPath+" && chmod +x "+setupPath)
+	kubectlExec(t, ctrlPod(), "boxy",
+		"printf '#!/bin/sh\\niptables -D OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP 2>/dev/null\\n' > "+teardownPath+" && chmod +x "+teardownPath)
+	t.Cleanup(func() {
+		exec.Command("kubectl", "-n", "boxy", "exec", ctrlPod(), "--",
+			"sh", "-c", "iptables -D OUTPUT -m owner --uid-owner 65534 -d 1.1.1.1 -j DROP 2>/dev/null").Run()
+		kubectlExec(t, ctrlPod(), "boxy", "rm -f "+setupPath+" "+teardownPath)
+	})
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:      sandboxID,
+		TTLSeconds:     120,
+		SetupScript:    setupPath,
+		TeardownScript: teardownPath,
+		Network:        &api.SandboxNetworkConfig{AllowInternetAccess: true},
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	blockedOut := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, SessionID: sessionID,
+		Command: "sh", Args: []string{"-c", "echo test | nc -w 2 1.1.1.1 53 2>&1; echo exit=$?"},
+		TimeoutSeconds: 10,
+	})
+	if strings.Contains(blockedOut.Stdout, "exit=0") {
+		t.Fatalf("connection to blocked IP 1.1.1.1 should fail, got: %s", blockedOut.Stdout)
+	}
+
+	allowedOut := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, SessionID: sessionID,
+		Command: "sh", Args: []string{"-c", "getent hosts example.com 2>/dev/null | head -1 | awk '{print $1}' || echo failed"},
+		TimeoutSeconds: 10,
+	})
+	ip := strings.TrimSpace(allowedOut.Stdout)
+	if ip == "failed" || ip == "" {
+		t.Skip("DNS resolution blocked by network policy -- cannot validate allowed traffic")
+	}
+	if !strings.Contains(ip, ".") && !strings.Contains(ip, ":") {
+		t.Fatalf("expected IP for example.com, got %q", ip)
+	}
 }

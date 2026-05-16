@@ -23,7 +23,6 @@ func TestEnsureDefaultSandbox_Disabled(t *testing.T) {
 	}
 }
 
-
 func TestEnsureDefaultSandbox_AlreadyExists(t *testing.T) {
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not call controller when sandbox already exists")
