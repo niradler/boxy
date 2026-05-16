@@ -2,9 +2,12 @@ package api
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
+
+var K8sNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
 
 const (
 	LabelSessionID = "boxy.dev/session-id"
@@ -94,8 +97,13 @@ func ValidateSessionCreate(b *SessionCreateBody) error {
 	if strings.TrimSpace(b.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
 	}
-	if b.SessionID != "" && len(b.SessionID) > 253 {
-		return fmt.Errorf("sessionId too long")
+	if b.SessionID != "" {
+		if len(b.SessionID) > 253 {
+			return fmt.Errorf("sessionId too long")
+		}
+		if !K8sNameRegex.MatchString(b.SessionID) {
+			return fmt.Errorf("sessionId must be a valid K8s name (lowercase alphanumeric, '-', '.')")
+		}
 	}
 	return nil
 }
