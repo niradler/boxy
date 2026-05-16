@@ -36,7 +36,7 @@ jq_present=$(kctl exec "${ctrl_pod}" -- test -f /usr/local/bin/jq && echo "yes" 
 yq_present=$(kctl exec "${ctrl_pod}" -- test -f /usr/local/bin/yq && echo "yes" || echo "no")
 
 if [[ "${jq_present}" != "yes" || "${yq_present}" != "yes" ]]; then
-  skip "Dev controller image not deployed (jq=${jq_present}, yq=${yq_present}) — deploy with controller.image.tag=dev"
+  skip "Dev controller image not deployed (jq=${jq_present}, yq=${yq_present}); deploy with controller.image.tag=dev"
   summary
   exit 0
 fi

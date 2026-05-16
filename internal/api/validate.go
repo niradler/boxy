@@ -8,6 +8,7 @@ import (
 )
 
 var K8sNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+var K8sLabelValueRegex = regexp.MustCompile(`^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$`)
 
 const (
 	LabelSessionID = "boxy.dev/session-id"
@@ -25,6 +26,17 @@ func ValidateExecRequest(
 	}
 	if strings.TrimSpace(r.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
+	}
+	if err := ValidateSandboxID(r.SandboxID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(r.SessionID) != "" {
+		if err := ValidateSessionID(r.SessionID); err != nil {
+			return err
+		}
+	}
+	if err := validateOptionalLabelValue("owner", r.Owner); err != nil {
+		return err
 	}
 	if strings.TrimSpace(r.Command) == "" {
 		return fmt.Errorf("command is required")
@@ -59,11 +71,8 @@ func ValidateSandboxCreate(b *SandboxCreateBody, maxTTL int) error {
 	if strings.TrimSpace(b.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
 	}
-	if len(b.SandboxID) > 253 {
-		return fmt.Errorf("sandboxId too long")
-	}
-	if !K8sNameRegex.MatchString(b.SandboxID) {
-		return fmt.Errorf("sandboxId must be a valid K8s name (lowercase alphanumeric, '-', '.')")
+	if err := ValidateSandboxID(b.SandboxID); err != nil {
+		return err
 	}
 	if b.TTLSeconds < 0 {
 		return fmt.Errorf("ttlSeconds must be non-negative")
@@ -97,13 +106,51 @@ func ValidateSessionCreate(b *SessionCreateBody) error {
 	if strings.TrimSpace(b.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
 	}
+	if err := ValidateSandboxID(b.SandboxID); err != nil {
+		return err
+	}
 	if b.SessionID != "" {
-		if len(b.SessionID) > 253 {
-			return fmt.Errorf("sessionId too long")
+		if err := ValidateSessionID(b.SessionID); err != nil {
+			return err
 		}
-		if !K8sNameRegex.MatchString(b.SessionID) {
-			return fmt.Errorf("sessionId must be a valid K8s name (lowercase alphanumeric, '-', '.')")
-		}
+	}
+	if err := validateOptionalLabelValue("owner", b.Owner); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ValidateSandboxID(id string) error {
+	return validateLabelBackedName("sandboxId", id)
+}
+
+func ValidateSessionID(id string) error {
+	return validateLabelBackedName("sessionId", id)
+}
+
+func ValidateOwner(owner string) error {
+	return validateOptionalLabelValue("owner", owner)
+}
+
+func validateLabelBackedName(field, value string) error {
+	if len(value) > 63 {
+		return fmt.Errorf("%s too long: max 63 characters", field)
+	}
+	if !K8sNameRegex.MatchString(value) {
+		return fmt.Errorf("%s must be a valid K8s label-backed name (lowercase alphanumeric, '-', '.', max 63 chars)", field)
+	}
+	return nil
+}
+
+func validateOptionalLabelValue(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 63 {
+		return fmt.Errorf("%s too long: max 63 characters", field)
+	}
+	if !K8sLabelValueRegex.MatchString(value) {
+		return fmt.Errorf("%s must be a valid K8s label value", field)
 	}
 	return nil
 }

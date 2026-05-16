@@ -56,7 +56,7 @@ RUN curl -fsSL -o /jq \
 RUN curl -fsSL -o /yq \
         "https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64" \
     && chmod +x /yq
-# curl 8.20.0 — glibc-static build, no shared-lib deps in the Ubuntu 24.04 rootfs
+# curl 8.20.0, glibc-static build, no shared-lib deps in the Ubuntu 24.04 rootfs
 RUN curl -fsSL -o /tmp/curl.tar.xz \
         "https://github.com/stunnel/static-curl/releases/download/8.20.0/curl-linux-x86_64-glibc-8.20.0.tar.xz" \
     && tar -xJf /tmp/curl.tar.xz -C /tmp \

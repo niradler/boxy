@@ -55,7 +55,8 @@ spec:
                 sandboxId:
                   type: string
                   minLength: 1
-                  maxLength: 253
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
                 ttlSeconds:
                   type: integer
                   minimum: 0
@@ -73,20 +74,209 @@ spec:
                     type: string
                 vm:
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
+                  properties:
+                    memoryMb:
+                      type: integer
+                      minimum: 64
+                      maximum: 65536
+                    vcpus:
+                      type: integer
+                      minimum: 1
+                      maximum: 64
+                    workdir:
+                      type: string
+                    shell:
+                      type: string
+                    hostname:
+                      type: string
+                    user:
+                      type: string
+                    maxDurationSec:
+                      type: integer
+                      minimum: 0
+                    idleTimeoutSec:
+                      type: integer
+                      minimum: 0
+                    rlimits:
+                      type: array
+                      items:
+                        type: object
+                        required: [resource, soft, hard]
+                        properties:
+                          resource:
+                            type: string
+                          soft:
+                            type: integer
+                            format: int64
+                          hard:
+                            type: integer
+                            format: int64
+                    scripts:
+                      type: array
+                      items:
+                        type: object
+                        required: [name, content]
+                        properties:
+                          name:
+                            type: string
+                          content:
+                            type: string
+                    seccompString:
+                      type: string
+                    cloneNewTime:
+                      type: boolean
                 network:
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
+                  properties:
+                    enabled:
+                      type: boolean
+                    allowInternetAccess:
+                      type: boolean
+                    rules:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          direction:
+                            type: string
+                            enum: [ingress, egress]
+                          action:
+                            type: string
+                            enum: [allow, deny]
+                          protocols:
+                            type: array
+                            items:
+                              type: string
+                          ports:
+                            type: array
+                            items:
+                              type: integer
+                          portRanges:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                start:
+                                  type: integer
+                                end:
+                                  type: integer
+                          domains:
+                            type: array
+                            items:
+                              type: string
+                          domainSuffixes:
+                            type: array
+                            items:
+                              type: string
+                          cidrs:
+                            type: array
+                            items:
+                              type: string
+                          groups:
+                            type: array
+                            items:
+                              type: string
+                    ports:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          hostPort:
+                            type: integer
+                          guestPort:
+                            type: integer
+                          protocol:
+                            type: string
+                    dns:
+                      type: object
+                      properties:
+                        nameservers:
+                          type: array
+                          items:
+                            type: string
+                        rebindProtection:
+                          type: boolean
+                        queryTimeoutMs:
+                          type: integer
+                    secrets:
+                      type: array
+                      items:
+                        type: object
+                        required: [envVar, value]
+                        properties:
+                          envVar:
+                            type: string
+                          value:
+                            type: string
+                          allowedHosts:
+                            type: array
+                            items:
+                              type: string
+                          allowedHostPatterns:
+                            type: array
+                            items:
+                              type: string
+                          allowAnyHostDangerous:
+                            type: boolean
+                    maxConnections:
+                      type: integer
+                    trustHostCAs:
+                      type: boolean
+                    macvlan:
+                      type: object
+                      properties:
+                        interface:
+                          type: string
+                        ip:
+                          type: string
+                        netmask:
+                          type: string
+                        gateway:
+                          type: string
+                        mac:
+                          type: string
+                    usePasta:
+                      type: boolean
                 volumes:
                   type: array
                   items:
                     type: object
-                    x-kubernetes-preserve-unknown-fields: true
+                    required: [guestPath, type]
+                    properties:
+                      guestPath:
+                        type: string
+                      type:
+                        type: string
+                      hostPath:
+                        type: string
+                      name:
+                        type: string
+                      sizeMb:
+                        type: integer
+                      readonly:
+                        type: boolean
                 patches:
                   type: array
                   items:
                     type: object
-                    x-kubernetes-preserve-unknown-fields: true
+                    required: [type, path]
+                    properties:
+                      type:
+                        type: string
+                      path:
+                        type: string
+                      content:
+                        type: string
+                      bytes:
+                        type: string
+                      hostPath:
+                        type: string
+                      target:
+                        type: string
+                      mode:
+                        type: integer
+                      replace:
+                        type: boolean
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -144,16 +334,51 @@ spec:
                 sessionId:
                   type: string
                   minLength: 1
-                  maxLength: 253
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
                 sandboxId:
                   type: string
                   minLength: 1
-                  maxLength: 253
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
                 owner:
                   type: string
+                  maxLength: 63
+                  pattern: '^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$'
             status:
               type: object
-              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Creating
+                    - Running
+                    - Deleting
+                    - Terminated
+                controllerPool:
+                  type: string
+                controllerPod:
+                  type: string
+                controllerAddress:
+                  type: string
+                port:
+                  type: integer
+                  format: int32
+                createdAt:
+                  type: string
+                  format: date-time
+                expiresAt:
+                  type: string
+                  format: date-time
+                terminatedAt:
+                  type: string
+                  format: date-time
+                lastExecAt:
+                  type: string
+                  format: date-time
+                message:
+                  type: string
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

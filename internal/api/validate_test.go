@@ -33,10 +33,10 @@ func TestValidateSandboxCreate(t *testing.T) {
 		t.Fatal("expected error for ttl over max")
 	}
 
-	// sandboxId too long
-	b2 := &SandboxCreateBody{SandboxID: strings.Repeat("x", 254), TTLSeconds: 10}
+	// sandboxId too long for label-backed selectors
+	b2 := &SandboxCreateBody{SandboxID: strings.Repeat("x", 64), TTLSeconds: 10}
 	if err := ValidateSandboxCreate(b2, 100); err == nil {
-		t.Fatal("expected error for sandboxId > 253 chars")
+		t.Fatal("expected error for sandboxId > 63 chars")
 	}
 
 	// invalid k8s name format

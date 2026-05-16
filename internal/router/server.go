@@ -292,6 +292,9 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, err.Error(), "provisioning")
 		return
 	}
+	if !s.requireResourceAccess(w, r, "create", "sandboxes", body.SandboxID) {
+		return
+	}
 	resp, err := s.createSandboxFromBody(r.Context(), &body)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -308,6 +311,13 @@ func (s *Server) handleSandboxGet(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sandboxId"))
 	if id == "" {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
+		return
+	}
+	if err := api.ValidateSandboxID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "get", "sandboxes", id) {
 		return
 	}
 	ctx := r.Context()
@@ -332,6 +342,13 @@ func (s *Server) handleSandboxDelete(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sandboxId"))
 	if id == "" {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
+		return
+	}
+	if err := api.ValidateSandboxID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "delete", "sandboxes", id) {
 		return
 	}
 	ctx := r.Context()
@@ -565,7 +582,7 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(body.SessionID)
 	if sessionID == "" {
 		sessionID = generateSessionID()
-	} else if len(sessionID) > 253 || !api.K8sNameRegex.MatchString(sessionID) {
+	} else if err := api.ValidateSessionID(sessionID); err != nil {
 		s.jsonErr(w, http.StatusBadRequest, "invalid sessionId format", "validation")
 		return
 	}
@@ -581,6 +598,12 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 
 	sessionCreated := false
 	if session == nil || session.Status.Phase == boxyv1.SandboxPhaseTerminated {
+		if !s.requireResourceAccess(w, r, "get", "sandboxes", body.SandboxID) {
+			return
+		}
+		if !s.requireResourceAccess(w, r, "create", "sessions", sessionID) {
+			return
+		}
 		if session != nil && session.Status.Phase == boxyv1.SandboxPhaseTerminated {
 			if err := s.k8sClient.Delete(ctx, session); err != nil {
 				s.jsonErr(w, http.StatusInternalServerError, err.Error(), "delete_terminated")
@@ -605,6 +628,14 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sessionCreated = true
+	} else {
+		if session.Spec.SandboxID != body.SandboxID {
+			s.jsonErr(w, http.StatusBadRequest, "sessionId does not belong to sandboxId", "validation")
+			return
+		}
+		if !s.requireResourceAccess(w, r, "update", "sessions", session.Name) {
+			return
+		}
 	}
 
 	if session.Status.Phase != boxyv1.SandboxPhaseRunning {
@@ -653,6 +684,12 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		sessionID = generateSessionID()
 	}
+	if !s.requireResourceAccess(w, r, "get", "sandboxes", body.SandboxID) {
+		return
+	}
+	if !s.requireResourceAccess(w, r, "create", "sessions", sessionID) {
+		return
+	}
 
 	ctx := r.Context()
 	sb, err := s.lookupSandbox(ctx, body.SandboxID)
@@ -679,11 +716,22 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
+	if !s.requireResourceAccess(w, r, "list", "sessions", "") {
+		return
+	}
 	labels := client.MatchingLabels{}
 	if sandboxID := r.URL.Query().Get("sandboxId"); sandboxID != "" {
+		if err := api.ValidateSandboxID(sandboxID); err != nil {
+			s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+			return
+		}
 		labels[boxyv1.LabelSandboxID] = sandboxID
 	}
 	if owner := r.URL.Query().Get("owner"); owner != "" {
+		if err := api.ValidateOwner(owner); err != nil {
+			s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+			return
+		}
 		labels[api.LabelOwner] = owner
 	}
 
@@ -722,6 +770,13 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, "sessionId required", "")
 		return
 	}
+	if err := api.ValidateSessionID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "get", "sessions", id) {
+		return
+	}
 	sess, err := s.lookupSession(r.Context(), id)
 	if err != nil {
 		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
@@ -738,6 +793,13 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sessionId"))
 	if id == "" {
 		s.jsonErr(w, http.StatusBadRequest, "sessionId required", "")
+		return
+	}
+	if err := api.ValidateSessionID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "delete", "sessions", id) {
 		return
 	}
 	ctx := r.Context()
@@ -758,6 +820,9 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSandboxList(w http.ResponseWriter, r *http.Request) {
+	if !s.requireResourceAccess(w, r, "list", "sandboxes", "") {
+		return
+	}
 	var list boxyv1.SandboxList
 	if err := s.k8sReader.List(r.Context(), &list, client.InNamespace(s.cfg.SandboxNamespace)); err != nil {
 		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
@@ -787,6 +852,10 @@ func (s *Server) handleSandboxUpdate(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
 		return
 	}
+	if err := api.ValidateSandboxID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
 	var body api.SandboxCreateBody
 	if !s.decodeBody(w, r, &body) {
 		return
@@ -794,6 +863,9 @@ func (s *Server) handleSandboxUpdate(w http.ResponseWriter, r *http.Request) {
 	body.SandboxID = id
 	if err := api.ValidateSandboxCreate(&body, s.cfg.MaxSandboxTTLSec); err != nil {
 		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "update", "sandboxes", id) {
 		return
 	}
 
@@ -836,6 +908,13 @@ func (s *Server) handleSandboxEvict(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
 		return
 	}
+	if err := api.ValidateSandboxID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "update", "sandboxes", id) {
+		return
+	}
 	ctx := r.Context()
 
 	var list boxyv1.SessionList
@@ -872,6 +951,13 @@ func (s *Server) handleSandboxSessions(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("sandboxId"))
 	if id == "" {
 		s.jsonErr(w, http.StatusBadRequest, "sandboxId required", "")
+		return
+	}
+	if err := api.ValidateSandboxID(id); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+	if !s.requireResourceAccess(w, r, "list", "sessions", "") {
 		return
 	}
 

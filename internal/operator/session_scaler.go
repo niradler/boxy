@@ -59,7 +59,7 @@ func (r *SessionReconciler) tryScaleDown(ctx context.Context) error {
 	podCounts := map[string]int{}
 	for i := range sessionList.Items {
 		s := &sessionList.Items[i]
-		if s.Status.Phase == boxyv1.SandboxPhaseTerminated {
+		if s.Status.Phase == boxyv1.SandboxPhaseTerminated || s.Status.Phase == boxyv1.SandboxPhaseDeleting {
 			continue
 		}
 		if s.Status.ControllerPod != "" {

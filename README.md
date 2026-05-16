@@ -78,23 +78,31 @@ helm upgrade --install boxy ./deploy/helm/boxy \
 
 ### First API calls
 
-The router accepts any valid Kubernetes ServiceAccount token. Get one for your client SA:
+The router accepts Kubernetes ServiceAccount tokens that authenticate with TokenReview
+and are authorized with SubjectAccessReview for the requested Boxy resource. Get one
+for your client SA:
 
 ```bash
 export TOKEN=$(kubectl create token <your-sa> -n <namespace> --duration=3600s)
 export BASE=http://<router-service>:8080
 
-# Create a sandbox
+# Create a sandbox config
 curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"sessionId":"demo","sandboxId":"demo-1","owner":"you","ttlSeconds":3600}' \
+  -d '{"sandboxId":"demo-1","ttlSeconds":3600}' \
   $BASE/v1/sandboxes | jq .
 
-# Execute a command
+# Create a session
+curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"sessionId":"demo","sandboxId":"demo-1","owner":"you"}' \
+  $BASE/v1/sessions | jq .
+
+# Execute a command in the session
 curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"sessionId":"demo","sandboxId":"demo-1","command":"sh","args":["-c","echo hello from nsjail"],"timeoutSeconds":30}' \
-  $BASE/v1/exec | jq .
+  $BASE/v1/sessions/exec | jq .
 
-# Delete the sandbox
+# Delete the session, then optionally delete the sandbox config
+curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/v1/sessions/demo
 curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/v1/sandboxes/demo-1
 ```
 
@@ -106,9 +114,9 @@ Returns `200 OK` with body `ok`.
 
 ### `POST /v1/sandboxes`
 
-Create a sandbox. Returns `201` when the sandbox is `Running`.
+Create a sandbox config. Sessions created from this config become running sandboxes.
 
-**Required fields:** `sessionId`, `sandboxId`, `owner`.
+**Required fields:** `sandboxId`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -141,16 +149,28 @@ Create a sandbox. Returns `201` when the sandbox is `Running`.
 | `macvlan` | object | Clone a MACVLAN interface into the sandbox: `{ "interface": "eth0", "ip": "...", "netmask": "...", "gateway": "...", "mac": "..." }`. |
 | `usePasta` | bool | Use pasta userland networking instead of a network namespace. |
 
-Response: `{ "sandboxId", "sessionId", "owner", "runtime", "phase", "ready" }`. `runtime` is always `"nsjail"`.
+Response: `{ "sandboxId", "ttlSeconds", "activeSessions" }`.
 
-### `POST /v1/exec`
+### `POST /v1/sessions`
 
-Execute a command inside an existing sandbox.
+Create a session from an existing sandbox config.
 
 | Field | Type | Description |
 |---|---|---|
 | `sandboxId` | string | Required. |
-| `sessionId` | string | Required. |
+| `sessionId` | string | Optional. Generated when omitted. |
+| `owner` | string | Optional label-safe owner string. |
+
+Response: `{ "sessionId", "sandboxId", "owner", "phase", "ready", "controllerPod", "createdAt", "expiresAt" }`.
+
+### `POST /v1/sessions/exec`
+
+Execute a command inside an existing session. If `sessionId` is omitted, the router creates a new session and returns it in `X-Boxy-Session-Id`.
+
+| Field | Type | Description |
+|---|---|---|
+| `sandboxId` | string | Required. |
+| `sessionId` | string | Optional. Generated when omitted. |
 | `command` | string | Required. Resolved against rootfs `PATH` if relative. |
 | `args` | string[] | Command arguments. |
 | `env` | map | Per-exec env overrides. |
@@ -160,11 +180,19 @@ Response: `{ "exitCode", "stdout", "stderr", "timedOut" }`.
 
 ### `GET /v1/sandboxes/{sandboxId}`
 
-Returns sandbox status.
+Returns sandbox config metadata and active session count.
+
+### `GET /v1/sessions/{sessionId}`
+
+Returns session status.
+
+### `DELETE /v1/sessions/{sessionId}`
+
+Deletes the session and cleans up its controller-side sandbox.
 
 ### `DELETE /v1/sandboxes/{sandboxId}`
 
-Deletes the sandbox and removes its CR.
+Deletes the sandbox config after active sessions are evicted/terminated.
 
 ### HTTP status codes
 
@@ -172,7 +200,8 @@ Deletes the sandbox and removes its CR.
 |---|---|
 | `400` | Bad request (missing required field, invalid JSON, blocked env prefix, body exceeds 6 MB limit). |
 | `401` | Missing, expired, or invalid bearer token (SA token rejected by TokenReview, or static token mismatch). |
-| `404` | Sandbox not found. |
+| `403` | Authenticated token is not authorized for the requested Boxy resource. |
+| `404` | Sandbox or session not found. |
 | `409` | Sandbox already exists. |
 | `429` | Concurrency limit hit (router or controller semaphore full). |
 | `502` | Controller pod unreachable or returned an error. |
@@ -328,7 +357,7 @@ cmd/boxy-router/         Router entry point (Go)
 cmd/boxy-operator/       Operator entry point (Go)
 cmd/boxy-controller/     Controller entry point (Go)
   main.go                Config, mTLS server setup, graceful shutdown
-  server.go              HTTP handlers for /v1/sandboxes, /v1/exec, /healthz
+  server.go              HTTP handlers for /v1/sandboxes, /v1/sessions, /mcp, /healthz
 local/
   gen-mtls-certs.sh      Generate CA + server + client mTLS certs for production deployment
   setup-mcp-dev.sh       Wire Claude Code (MCP) to a local boxy deployment

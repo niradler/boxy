@@ -175,7 +175,7 @@ Written in Go. Exposes a small HTTP API (mTLS-only) consumed by the router and o
 | `/v1/sandboxes` | POST   | Create a new sandbox (mkdir workspace, validate config) |
 | `/v1/sandboxes` | GET    | List active sandbox IDs                                 |
 | `/v1/sandboxes` | DELETE | Remove sandbox (clean workspace)                        |
-| `/v1/exec`      | POST   | Run a command in the sandbox via nsjail                 |
+| `/v1/exec`      | POST   | Internal controller endpoint used by the router/operator to run a command via nsjail |
 | `/healthz`      | GET    | Liveness check                                          |
 
 Internally, each sandbox is a directory at `/var/lib/boxy/sandboxes/{id}/workspace`. When exec is called, the controller builds an `NsjailConfig` struct, serializes it to protobuf text format, writes it to a temp file, and runs `nsjail --config <file> -- <cmd> <args>`. The temp file is removed after nsjail exits.
@@ -705,8 +705,8 @@ kubectl get controllerpool -n boxy
 # Full status including Ready condition
 kubectl get controllerpool boxy-ctrl -n boxy -o yaml | grep -A20 'status:'
 
-# Sandboxes and which pool they reference
-kubectl get sandbox -n boxy -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,POOL:.status.controllerPool,POD:.status.controllerPod'
+# Sessions and which pool they reference
+kubectl get session -n boxy -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,POOL:.status.controllerPool,POD:.status.controllerPod'
 ```
 
 ### Debug a Stuck Sandbox

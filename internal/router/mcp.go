@@ -71,6 +71,12 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID, sessionID string, p
 		if err != nil {
 			return toolError("store error: " + err.Error())
 		}
+		if session == nil {
+			return toolError(fmt.Sprintf("session %q not found", sessionID))
+		}
+		if strings.TrimSpace(sandboxID) != "" && session.Spec.SandboxID != sandboxID {
+			return toolError(fmt.Sprintf("session %q does not belong to sandbox %q", sessionID, sandboxID))
+		}
 	}
 
 	if session == nil {
@@ -86,6 +92,9 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID, sessionID string, p
 		}
 	}
 
+	if err := s.canResourceAccess(ctx, "update", "sessions", session.Name); err != nil {
+		return toolError("forbidden")
+	}
 	if session.Status.Phase != boxyv1.SandboxPhaseRunning {
 		return toolError(fmt.Sprintf("session %q not running (phase: %s)", session.Spec.SessionID, session.Status.Phase))
 	}
@@ -146,6 +155,9 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 	if err != nil {
 		return "", "", fmt.Errorf("lookup sandbox config: %w", err)
 	}
+	if err := s.canResourceAccess(ctx, "get", "sandboxes", sandboxID); err != nil {
+		return "", "", fmt.Errorf("forbidden")
+	}
 	if sb == nil {
 		if _, err := s.createSandboxFromBody(ctx, s.cfg.DefaultSandboxConfig); err != nil {
 			return "", "", fmt.Errorf("create default sandbox config: %w", err)
@@ -159,6 +171,14 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 		return "", "", err
 	}
 	if sess == nil || sess.Status.Phase == boxyv1.SandboxPhaseTerminated {
+		if err := s.canResourceAccess(ctx, "create", "sessions", defaultSessionID); err != nil {
+			return "", "", fmt.Errorf("forbidden")
+		}
+		if sess != nil {
+			if err := s.k8sClient.Delete(ctx, sess); err != nil {
+				return "", "", fmt.Errorf("delete terminated session: %w", err)
+			}
+		}
 		createCtx, cancel := context.WithTimeout(ctx, s.cfg.CreateTimeout+5*time.Second)
 		defer cancel()
 		if _, err := s.createAndWaitForSession(createCtx, defaultSessionID, sandboxID, "system"); err != nil {

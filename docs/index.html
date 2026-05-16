@@ -325,17 +325,17 @@
           Execute command
         </h3>
         <div class="flow-col">
-          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>POST /v1/exec {sandboxId, command, args, timeoutSeconds}</div>
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>POST /v1/sessions/exec {sandboxId, sessionId, command, args, timeoutSeconds}</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>Reads Sandbox CR · resolves controllerAddress</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>Reads Session CR · resolves controllerAddress</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>POST /v1/exec over mTLS → boxy-controller</div>
+          <div class="flow-step"><span class="font-semibold text-blue-600 text-xs">boxy-router</span><br>POST controller /v1/exec over mTLS → boxy-controller</div>
           <div class="flow-arrow">↓</div>
           <div class="flow-step"><span class="font-semibold text-green-600 text-xs">boxy-controller</span><br>Builds NsjailConfig proto · writes to temp file · spawns nsjail process</div>
           <div class="flow-arrow">↓</div>
           <div class="flow-step"><span class="font-semibold text-amber-600 text-xs">nsjail sandbox</span><br>Executes command · captures stdout/stderr · exits (or SIGKILLed on timeout)</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>← 200 {exitCode, stdout, stderr, timedOut}</div>
+          <div class="flow-step"><span class="font-semibold text-gray-500 text-xs">Client</span><br>← 200 {exitCode, stdout, stderr, timedOut} + X-Boxy-Session-Id</div>
         </div>
         <p class="text-xs text-gray-400 mt-4">Router also updates <code class="bg-gray-100 px-1 rounded">lastExecAt</code> on the CR to slide the TTL window.</p>
       </div>
@@ -372,19 +372,25 @@ export BASE=http://&lt;router-service&gt;:8080</code></pre>
         <pre><code class="language-bash rounded-xl">curl -sS \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"sessionId":"demo","sandboxId":"demo-1",
-       "owner":"you","ttlSeconds":3600}' \
+  -d '{"sandboxId":"demo-1","ttlSeconds":3600}' \
   $BASE/v1/sandboxes | jq .</code></pre>
       </div>
       <div>
-        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">4 · Execute a command</h3>
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">4 · Create and exec</h3>
         <pre><code class="language-bash rounded-xl">curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo","sandboxId":"demo-1",
+       "owner":"you"}' \
+  $BASE/v1/sessions | jq .
+
+curl -sS \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"demo","sandboxId":"demo-1",
        "command":"sh","args":["-c","echo hello"],
        "timeoutSeconds":30}' \
-  $BASE/v1/exec | jq .
+  $BASE/v1/sessions/exec | jq .
 
 # Response:
 # { "exitCode": 0, "stdout": "hello\n",
@@ -416,22 +422,27 @@ export BASE=http://&lt;router-service&gt;:8080</code></pre>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
             <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes</td>
-            <td class="px-5 py-3 text-gray-600">Create a sandbox. Returns <code class="bg-gray-100 px-1 rounded text-xs">201</code> when Running</td>
+              <td class="px-5 py-3 text-gray-600">Create a sandbox config. Returns <code class="bg-gray-100 px-1 rounded text-xs">201</code></td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-green-100 text-green-700 px-2 py-0.5 rounded font-mono text-xs font-bold">GET</span></td>
             <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes/{sandboxId}</td>
-            <td class="px-5 py-3 text-gray-600">Get sandbox status and metadata</td>
+            <td class="px-5 py-3 text-gray-600">Get sandbox config metadata and active sessions</td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-red-100 text-red-700 px-2 py-0.5 rounded font-mono text-xs font-bold">DELETE</span></td>
             <td class="px-5 py-3 font-mono text-xs">/v1/sandboxes/{sandboxId}</td>
-            <td class="px-5 py-3 text-gray-600">Delete sandbox and remove its CR</td>
+            <td class="px-5 py-3 text-gray-600">Delete sandbox config after sessions terminate</td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
-            <td class="px-5 py-3 font-mono text-xs">/v1/exec</td>
-            <td class="px-5 py-3 text-gray-600">Execute a command in an existing sandbox</td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sessions</td>
+            <td class="px-5 py-3 text-gray-600">Create a running session from a sandbox config</td>
+          </tr>
+          <tr class="hover:bg-gray-50">
+            <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
+            <td class="px-5 py-3 font-mono text-xs">/v1/sessions/exec</td>
+            <td class="px-5 py-3 text-gray-600">Execute a command in a session</td>
           </tr>
           <tr class="hover:bg-gray-50">
             <td class="px-5 py-3"><span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-mono text-xs font-bold">POST</span></td>
@@ -468,7 +479,7 @@ export BASE=http://&lt;router-service&gt;:8080</code></pre>
         </div>
       </div>
       <div>
-        <h3 class="font-bold text-base mb-3">POST /v1/exec - request body</h3>
+        <h3 class="font-bold text-base mb-3">POST /v1/sessions/exec - request body</h3>
         <div class="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
           <table class="w-full text-xs">
             <thead class="bg-gray-50 border-b border-gray-100">
@@ -652,7 +663,7 @@ curl -sS \
   <div class="max-w-6xl mx-auto">
     <div class="text-center mb-10">
       <h2 class="text-3xl font-bold mb-3">Custom Resource Definitions</h2>
-      <p class="text-gray-500 max-w-2xl mx-auto text-sm">boxy ships two CRDs in the <code class="bg-gray-100 px-1 rounded">boxy.dev</code> group. All state lives in these CRs — the router and operator are fully stateless. Short names work with kubectl (<code class="bg-gray-100 px-1 rounded">kubectl get sbx</code>, <code class="bg-gray-100 px-1 rounded">kubectl get cp</code>).</p>
+      <p class="text-gray-500 max-w-2xl mx-auto text-sm">boxy ships two CRDs in the <code class="bg-gray-100 px-1 rounded">boxy.dev</code> group. All state lives in these CRs; the router and operator are fully stateless. Short names work with kubectl (<code class="bg-gray-100 px-1 rounded">kubectl get sbx</code>, <code class="bg-gray-100 px-1 rounded">kubectl get cp</code>).</p>
     </div>
 
     <!-- Sandbox CRD -->

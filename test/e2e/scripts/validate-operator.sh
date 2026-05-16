@@ -282,7 +282,7 @@ if [[ -n "${SHORT_SESS}" ]]; then
     fail "Short-TTL session expired" "still phase=${current_phase} after 60s"
   fi
 else
-  skip "Short-TTL session not created — skipping TTL expiry test"
+  skip "Short-TTL session not created; skipping TTL expiry test"
 fi
 
 # -----------------------------------------------------------------------
