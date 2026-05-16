@@ -20,9 +20,6 @@ func ValidateExecRequest(
 	if r == nil {
 		return fmt.Errorf("request is nil")
 	}
-	if strings.TrimSpace(r.SessionID) == "" {
-		return fmt.Errorf("sessionId is required")
-	}
 	if strings.TrimSpace(r.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
 	}
@@ -86,6 +83,19 @@ func ValidateSandboxCreate(b *SandboxCreateBody, maxTTL int) error {
 				return fmt.Errorf("sandbox env value too long")
 			}
 		}
+	}
+	return nil
+}
+
+func ValidateSessionCreate(b *SessionCreateBody) error {
+	if b == nil {
+		return fmt.Errorf("request is nil")
+	}
+	if strings.TrimSpace(b.SandboxID) == "" {
+		return fmt.Errorf("sandboxId is required")
+	}
+	if b.SessionID != "" && len(b.SessionID) > 253 {
+		return fmt.Errorf("sessionId too long")
 	}
 	return nil
 }
