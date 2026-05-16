@@ -71,6 +71,52 @@ type SandboxStatus struct {
 }
 
 const (
-	FinalizerSandboxCleanup = "boxy.dev/sandbox-cleanup"
-	LabelSandboxID          = "boxy.dev/sandbox-id"
+	FinalizerSandboxCleanup       = "boxy.dev/sandbox-cleanup"
+	FinalizerSessionCleanup       = "boxy.dev/session-cleanup"
+	FinalizerSandboxConfigCleanup = "boxy.dev/sandbox-config-cleanup"
+	LabelSandboxID                = "boxy.dev/sandbox-id"
 )
+
+// Session CR types
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=sess
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="SandboxID",type=string,JSONPath=".spec.sandboxId"
+// +kubebuilder:printcolumn:name="Controller",type=string,JSONPath=".status.controllerPod"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+
+type Session struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec   SessionSpec   `json:"spec,omitempty"`
+	Status SessionStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+type SessionList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Session `json:"items"`
+}
+
+type SessionSpec struct {
+	SessionID string `json:"sessionId"`
+	SandboxID string `json:"sandboxId"`
+	Owner     string `json:"owner,omitempty"`
+}
+
+type SessionStatus struct {
+	Phase             SandboxPhase `json:"phase,omitempty"`
+	ControllerPool    string       `json:"controllerPool,omitempty"`
+	ControllerPod     string       `json:"controllerPod,omitempty"`
+	ControllerAddress string       `json:"controllerAddress,omitempty"`
+	Port              int32        `json:"port,omitempty"`
+	CreatedAt         *metav1.Time `json:"createdAt,omitempty"`
+	ExpiresAt         *metav1.Time `json:"expiresAt,omitempty"`
+	LastExecAt        *metav1.Time `json:"lastExecAt,omitempty"`
+	TerminatedAt      *metav1.Time `json:"terminatedAt,omitempty"`
+	Message           string       `json:"message,omitempty"`
+}

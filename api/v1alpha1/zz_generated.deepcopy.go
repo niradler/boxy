@@ -236,6 +236,101 @@ func (in *ControllerPoolStatus) DeepCopy() *ControllerPoolStatus {
 	return out
 }
 
+func (in *Session) DeepCopyInto(out *Session) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.Spec = in.Spec
+	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *Session) DeepCopy() *Session {
+	if in == nil {
+		return nil
+	}
+	out := new(Session)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *Session) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *SessionList) DeepCopyInto(out *SessionList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]Session, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *SessionList) DeepCopy() *SessionList {
+	if in == nil {
+		return nil
+	}
+	out := new(SessionList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *SessionList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *SessionSpec) DeepCopyInto(out *SessionSpec) {
+	*out = *in
+}
+
+func (in *SessionSpec) DeepCopy() *SessionSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(SessionSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *SessionStatus) DeepCopyInto(out *SessionStatus) {
+	*out = *in
+	if in.CreatedAt != nil {
+		in, out := &in.CreatedAt, &out.CreatedAt
+		*out = (*in).DeepCopy()
+	}
+	if in.ExpiresAt != nil {
+		in, out := &in.ExpiresAt, &out.ExpiresAt
+		*out = (*in).DeepCopy()
+	}
+	if in.LastExecAt != nil {
+		in, out := &in.LastExecAt, &out.LastExecAt
+		*out = (*in).DeepCopy()
+	}
+	if in.TerminatedAt != nil {
+		in, out := &in.TerminatedAt, &out.TerminatedAt
+		*out = (*in).DeepCopy()
+	}
+}
+
+func (in *SessionStatus) DeepCopy() *SessionStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(SessionStatus)
+	in.DeepCopyInto(out)
+	return out
+}
+
 func deepCopyVMConfig(in, out *api.VMConfig) {
 	*out = *in
 	if in.Rlimits != nil {
