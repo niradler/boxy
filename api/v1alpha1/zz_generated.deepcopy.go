@@ -14,7 +14,6 @@ func (in *Sandbox) DeepCopyInto(out *Sandbox) {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	in.Spec.DeepCopyInto(&out.Spec)
-	in.Status.DeepCopyInto(&out.Status)
 }
 
 func (in *Sandbox) DeepCopy() *Sandbox {
@@ -96,11 +95,6 @@ func (in *SandboxSpec) DeepCopyInto(out *SandboxSpec) {
 		*out = make([]api.SandboxPatch, len(*in))
 		copy(*out, *in)
 	}
-	if in.RetentionPeriod != nil {
-		in, out := &in.RetentionPeriod, &out.RetentionPeriod
-		*out = new(metav1.Duration)
-		**out = **in
-	}
 }
 
 func (in *SandboxSpec) DeepCopy() *SandboxSpec {
@@ -112,34 +106,6 @@ func (in *SandboxSpec) DeepCopy() *SandboxSpec {
 	return out
 }
 
-func (in *SandboxStatus) DeepCopyInto(out *SandboxStatus) {
-	*out = *in
-	if in.CreatedAt != nil {
-		in, out := &in.CreatedAt, &out.CreatedAt
-		*out = (*in).DeepCopy()
-	}
-	if in.ExpiresAt != nil {
-		in, out := &in.ExpiresAt, &out.ExpiresAt
-		*out = (*in).DeepCopy()
-	}
-	if in.TerminatedAt != nil {
-		in, out := &in.TerminatedAt, &out.TerminatedAt
-		*out = (*in).DeepCopy()
-	}
-	if in.LastExecAt != nil {
-		in, out := &in.LastExecAt, &out.LastExecAt
-		*out = (*in).DeepCopy()
-	}
-}
-
-func (in *SandboxStatus) DeepCopy() *SandboxStatus {
-	if in == nil {
-		return nil
-	}
-	out := new(SandboxStatus)
-	in.DeepCopyInto(out)
-	return out
-}
 
 func (in *ControllerPool) DeepCopyInto(out *ControllerPool) {
 	*out = *in

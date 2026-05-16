@@ -40,13 +40,11 @@ func TestEnsureDefaultSandbox_AlreadyExists(t *testing.T) {
 	}))
 	defer ctrl.Close()
 
-	sb := testSandbox("default", "default", "127.0.0.1", 8080, "Running")
+	sb := testSandbox("default", "default")
 	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb}, func(cfg *Config) {
 		cfg.DefaultSandboxEnabled = true
 		cfg.DefaultSandboxConfig = &api.SandboxCreateBody{
 			SandboxID:  "default",
-			SessionID:  "default-box",
-			Owner:      "system",
 			TTLSeconds: 86400,
 		}
 	})

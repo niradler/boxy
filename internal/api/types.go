@@ -1,11 +1,5 @@
 package api
 
-type PodRef struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	UID       string `json:"uid"`
-}
-
 type ExecRequestBody struct {
 	SandboxID      string            `json:"sandboxId"`
 	SessionID      string            `json:"sessionId,omitempty"`
@@ -129,9 +123,7 @@ type SandboxPatch struct {
 }
 
 type SandboxCreateBody struct {
-	SessionID       string                `json:"sessionId"`
 	SandboxID       string                `json:"sandboxId"`
-	Owner           string                `json:"owner"`
 	TTLSeconds      int                   `json:"ttlSeconds,omitempty"`
 	Env             map[string]string     `json:"env,omitempty"`
 	AllowedBinaries []string              `json:"allowedBinaries,omitempty"`
@@ -139,16 +131,6 @@ type SandboxCreateBody struct {
 	Network         *SandboxNetworkConfig `json:"network,omitempty"`
 	Volumes         []VolumeMount         `json:"volumes,omitempty"`
 	Patches         []SandboxPatch        `json:"patches,omitempty"`
-}
-
-type SandboxResponseBody struct {
-	SandboxID string `json:"sandboxId"`
-	SessionID string `json:"sessionId"`
-	Owner     string `json:"owner"`
-	Runtime   string `json:"runtime"`
-	PodRef    PodRef `json:"podRef"`
-	Phase     string `json:"phase"`
-	Ready     bool   `json:"ready"`
 }
 
 type ErrorBody struct {

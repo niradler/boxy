@@ -19,6 +19,20 @@ import (
 	ctrlclient "boxy.dev/boxy/internal/controller"
 )
 
+type ReconcilerConfig struct {
+	Namespace              string
+	StatefulSetName        string
+	HeadlessServiceName    string
+	ControllerPoolName     string
+	ControllerPort         int32
+	MaxSandboxesPerCtrl    int
+	MaxControllerReplicas  int32
+	MinControllerReplicas  int32
+	TerminatedRetentionSec int
+	ScaleDownCooldown      time.Duration
+	MTLSDisabled           bool
+}
+
 type SessionReconciler struct {
 	client.Client
 	ctrlClient *ctrlclient.Client
@@ -417,4 +431,16 @@ func (r *SessionReconciler) scaleStatefulSet(ctx context.Context, adjustFn func(
 	}
 	r.log.Info("scaled controller StatefulSet", "from", current, "to", desired)
 	return nil
+}
+
+func podRunningReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }

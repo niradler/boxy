@@ -37,7 +37,7 @@ func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, op
 	port, _ := strconv.Atoi(u.Port())
 
 	scheme := testScheme()
-	fc := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).WithStatusSubresource(&boxyv1.Sandbox{}).Build()
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).WithStatusSubresource(&boxyv1.Session{}).Build()
 
 	cfg := Config{
 		DevToken:         "test-token",
@@ -48,6 +48,7 @@ func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, op
 		MaxSandboxTTLSec: 86400,
 		ControllerPort:   int32(port),
 		MTLSDisabled:     true,
+		CreateTimeout:    5 * time.Second,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -66,7 +67,7 @@ func newTestServer(t *testing.T, controllerURL string, objs []runtime.Object, op
 	}
 }
 
-func testSandbox(name, sandboxID, ctrlAddr string, port int32, phase boxyv1.SandboxPhase) *boxyv1.Sandbox {
+func testSandbox(name, sandboxID string) *boxyv1.Sandbox {
 	return &boxyv1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -75,14 +76,28 @@ func testSandbox(name, sandboxID, ctrlAddr string, port int32, phase boxyv1.Sand
 		},
 		Spec: boxyv1.SandboxSpec{
 			SandboxID: sandboxID,
-			SessionID: "test-session",
-			Owner:     "test",
 		},
-		Status: boxyv1.SandboxStatus{
+	}
+}
+
+func testSession(name, sessionID, sandboxID, ctrlAddr string, ctrlPort int32, phase boxyv1.SandboxPhase) *boxyv1.Session {
+	return &boxyv1.Session{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			Labels: map[string]string{
+				api.LabelSessionID:   sessionID,
+				boxyv1.LabelSandboxID: sandboxID,
+			},
+		},
+		Spec: boxyv1.SessionSpec{
+			SessionID: sessionID,
+			SandboxID: sandboxID,
+		},
+		Status: boxyv1.SessionStatus{
 			Phase:             phase,
-			ControllerPod:     "ctrl-0",
 			ControllerAddress: ctrlAddr,
-			Port:              port,
+			Port:              ctrlPort,
 		},
 	}
 }
@@ -105,7 +120,12 @@ type toolResult struct {
 	IsError bool `json:"isError"`
 }
 
-func mcpPost(t *testing.T, handler http.Handler, method string, params any, sandboxID string) (int, rpcResp) {
+type mcpHeaders struct {
+	sandboxID string
+	sessionID string
+}
+
+func mcpPost(t *testing.T, handler http.Handler, method string, params any, h mcpHeaders) (int, rpcResp) {
 	t.Helper()
 	req := map[string]any{"jsonrpc": "2.0", "id": 1, "method": method}
 	if params != nil {
@@ -116,8 +136,11 @@ func mcpPost(t *testing.T, handler http.Handler, method string, params any, sand
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set("Authorization", "Bearer test-token")
-	if sandboxID != "" {
-		httpReq.Header.Set("X-Sandbox-Id", sandboxID)
+	if h.sandboxID != "" {
+		httpReq.Header.Set("X-Sandbox-Id", h.sandboxID)
+	}
+	if h.sessionID != "" {
+		httpReq.Header.Set("X-Session-Id", h.sessionID)
 	}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httpReq)
@@ -150,7 +173,7 @@ func TestMCP_Initialize(t *testing.T) {
 	srv := newTestServer(t, ctrl.URL, nil)
 	handler := srv.Handler()
 
-	code, resp := mcpPost(t, handler, "initialize", initializeParams, "")
+	code, resp := mcpPost(t, handler, "initialize", initializeParams, mcpHeaders{})
 	if code != http.StatusOK {
 		t.Fatalf("HTTP %d", code)
 	}
@@ -181,7 +204,7 @@ func TestMCP_ToolsList(t *testing.T) {
 	srv := newTestServer(t, ctrl.URL, nil)
 	handler := srv.Handler()
 
-	code, resp := mcpPost(t, handler, "tools/list", nil, "")
+	code, resp := mcpPost(t, handler, "tools/list", nil, mcpHeaders{})
 	if code != http.StatusOK {
 		t.Fatalf("HTTP %d", code)
 	}
@@ -210,14 +233,14 @@ func TestMCP_ToolsCall_BashSuccess(t *testing.T) {
 	defer ctrl.Close()
 	u, _ := url.Parse(ctrl.URL)
 	port, _ := strconv.Atoi(u.Port())
-	sb := testSandbox("sb-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+	sess := testSession("sess-1", "sess-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
 
-	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb})
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sess})
 	handler := srv.Handler()
 	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
 		"name":      "bash",
 		"arguments": map[string]any{"command": "echo hello"},
-	}, "sb-1")
+	}, mcpHeaders{sessionID: "sess-1"})
 
 	if code != http.StatusOK {
 		t.Fatalf("HTTP %d", code)
@@ -234,7 +257,7 @@ func TestMCP_ToolsCall_BashSuccess(t *testing.T) {
 	}
 }
 
-func TestMCP_ToolsCall_UsesDefaultSandbox(t *testing.T) {
+func TestMCP_ToolsCall_UsesDefaultSession(t *testing.T) {
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/exec" {
 			_ = json.NewEncoder(w).Encode(ExecResult{Stdout: "from-default", ExitCode: 0})
@@ -245,12 +268,13 @@ func TestMCP_ToolsCall_UsesDefaultSandbox(t *testing.T) {
 	defer ctrl.Close()
 	u, _ := url.Parse(ctrl.URL)
 	port, _ := strconv.Atoi(u.Port())
-	sb := testSandbox("default", "default", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+	sb := testSandbox("default", "default")
+	sess := testSession("default-session", "default-session", "default", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
 
-	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb}, func(cfg *Config) {
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sb, sess}, func(cfg *Config) {
 		cfg.DefaultSandboxEnabled = true
 		cfg.DefaultSandboxConfig = &api.SandboxCreateBody{
-			SandboxID: "default", SessionID: "default-box", Owner: "system", TTLSeconds: 86400,
+			SandboxID: "default", TTLSeconds: 86400,
 		}
 	})
 
@@ -258,7 +282,7 @@ func TestMCP_ToolsCall_UsesDefaultSandbox(t *testing.T) {
 	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
 		"name":      "bash",
 		"arguments": map[string]any{"command": "echo hi"},
-	}, "")
+	}, mcpHeaders{})
 
 	if code != http.StatusOK {
 		t.Fatalf("HTTP %d", code)
@@ -284,7 +308,7 @@ func TestMCP_ToolsCall_NoSandbox_DefaultDisabled(t *testing.T) {
 	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
 		"name":      "bash",
 		"arguments": map[string]any{"command": "echo hi"},
-	}, "")
+	}, mcpHeaders{})
 
 	if code != http.StatusOK {
 		t.Fatalf("HTTP %d", code)
@@ -294,7 +318,7 @@ func TestMCP_ToolsCall_NoSandbox_DefaultDisabled(t *testing.T) {
 	}
 	tr := parseToolResult(t, resp.Result)
 	if !tr.IsError {
-		t.Fatal("expected tool-level error when no sandbox and default disabled")
+		t.Fatal("expected tool-level error when no session and default disabled")
 	}
 }
 

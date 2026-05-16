@@ -56,14 +56,8 @@ func ValidateSandboxCreate(b *SandboxCreateBody, maxTTL int) error {
 	if b == nil {
 		return fmt.Errorf("request is nil")
 	}
-	if strings.TrimSpace(b.SessionID) == "" {
-		return fmt.Errorf("sessionId is required")
-	}
 	if strings.TrimSpace(b.SandboxID) == "" {
 		return fmt.Errorf("sandboxId is required")
-	}
-	if strings.TrimSpace(b.Owner) == "" {
-		return fmt.Errorf("owner is required")
 	}
 	if b.TTLSeconds < 0 {
 		return fmt.Errorf("ttlSeconds must be non-negative")

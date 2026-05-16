@@ -24,7 +24,7 @@ func TestValidateExecRequest(t *testing.T) {
 }
 
 func TestValidateSandboxCreate(t *testing.T) {
-	b := &SandboxCreateBody{SessionID: "s", SandboxID: "x", Owner: "o", TTLSeconds: 10}
+	b := &SandboxCreateBody{SandboxID: "x", TTLSeconds: 10}
 	if err := ValidateSandboxCreate(b, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +47,8 @@ func TestValidateExecEnvKey(t *testing.T) {
 
 func TestValidateSandboxCreateBlockedEnv(t *testing.T) {
 	b := &SandboxCreateBody{
-		SessionID: "s", SandboxID: "x", Owner: "o",
-		Env: map[string]string{"BOXY_X": "1"},
+		SandboxID: "x",
+		Env:       map[string]string{"BOXY_X": "1"},
 	}
 	if err := ValidateSandboxCreate(b, 100); err == nil {
 		t.Fatal("expected error")

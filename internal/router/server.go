@@ -128,12 +128,6 @@ func ConfigFromEnv() (*Config, error) {
 		if body.SandboxID == "" {
 			body.SandboxID = "default"
 		}
-		if body.Owner == "" {
-			body.Owner = "system"
-		}
-		if body.SessionID == "" {
-			body.SessionID = "default-box"
-		}
 		cfg.DefaultSandboxConfig = &body
 	}
 	return cfg, nil
@@ -198,8 +192,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sandboxes/{sandboxId}", s.withAuth(s.handleSandboxDelete))
 	mux.HandleFunc("POST /v1/sandboxes/{sandboxId}/evict", s.withAuth(s.handleSandboxEvict))
 	mux.HandleFunc("GET /v1/sandboxes/{sandboxId}/sessions", s.withAuth(s.handleSandboxSessions))
-
-	mux.HandleFunc("POST /v1/exec", s.withAuth(s.withBodyLimit(s.handleExec)))
 
 	mux.Handle("/mcp", s.withAuthHandler(s.newMCPHandler()))
 	return mux
@@ -277,60 +269,6 @@ func (s *Server) writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
-	select {
-	case s.sem <- struct{}{}:
-		defer func() { <-s.sem }()
-	default:
-		s.jsonErr(w, http.StatusTooManyRequests, "concurrency limit", "too_many_in_flight")
-		return
-	}
-	var body api.ExecRequestBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.jsonErr(w, http.StatusBadRequest, "invalid json", "")
-		return
-	}
-	if err := api.ValidateExecRequest(&body, s.cfg.MaxTimeoutSec, s.cfg.MaxArgs, s.cfg.MaxEnvKeys); err != nil {
-		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(body.TimeoutSeconds)*time.Second+5*time.Second)
-	defer cancel()
-
-	sandbox, err := s.lookupSandbox(ctx, body.SandboxID)
-	if err != nil {
-		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
-		return
-	}
-	if sandbox == nil || sandbox.Status.Phase != boxyv1.SandboxPhaseRunning {
-		s.jsonErr(w, http.StatusNotFound, "sandbox not found", "sandbox_lookup")
-		return
-	}
-
-	baseURL := s.controllerURL(sandbox)
-	result, err := s.ctrlClient.Exec(ctx, baseURL, ctrlclient.ExecReq{
-		SandboxID:      body.SandboxID,
-		Command:        body.Command,
-		Args:           body.Args,
-		Env:            body.Env,
-		TimeoutSeconds: body.TimeoutSeconds,
-	})
-	if err != nil {
-		s.jsonErr(w, http.StatusBadGateway, err.Error(), "exec")
-		return
-	}
-
-	go s.touchLastExec(sandbox.DeepCopy())
-
-	s.writeJSON(w, http.StatusOK, &api.ExecResponseBody{
-		Stdout:   result.Stdout,
-		Stderr:   result.Stderr,
-		ExitCode: result.ExitCode,
-		TimedOut: result.TimedOut,
-	})
-}
-
 func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 	var body api.SandboxCreateBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -341,7 +279,6 @@ func (s *Server) handleSandboxCreate(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, http.StatusBadRequest, err.Error(), "provisioning")
 		return
 	}
-
 	resp, err := s.createSandboxFromBody(r.Context(), &body)
 	if err != nil {
 		s.jsonErr(w, http.StatusBadGateway, err.Error(), "create_sandbox")
@@ -417,21 +354,17 @@ func (s *Server) lookupSandbox(ctx context.Context, sandboxID string) (*boxyv1.S
 	return nil, nil
 }
 
-func (s *Server) createSandboxFromBody(ctx context.Context, body *api.SandboxCreateBody) (*api.SandboxResponseBody, error) {
+func (s *Server) createSandboxFromBody(ctx context.Context, body *api.SandboxCreateBody) (*api.SandboxConfigResponse, error) {
 	sandbox := &boxyv1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      body.SandboxID,
 			Namespace: s.cfg.SandboxNamespace,
 			Labels: map[string]string{
 				boxyv1.LabelSandboxID: body.SandboxID,
-				api.LabelSessionID:    body.SessionID,
-				api.LabelOwner:        body.Owner,
 			},
 		},
 		Spec: boxyv1.SandboxSpec{
 			SandboxID:       body.SandboxID,
-			SessionID:       body.SessionID,
-			Owner:           body.Owner,
 			TTLSeconds:      body.TTLSeconds,
 			Env:             body.Env,
 			AllowedBinaries: body.AllowedBinaries,
@@ -445,66 +378,7 @@ func (s *Server) createSandboxFromBody(ctx context.Context, body *api.SandboxCre
 	if err := s.k8sClient.Create(ctx, sandbox); err != nil {
 		return nil, fmt.Errorf("create sandbox CR: %w", err)
 	}
-
-	timeout := s.cfg.CreateTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	deadline := time.Now().Add(timeout)
-
-	for {
-		if err := s.k8sReader.Get(ctx, client.ObjectKeyFromObject(sandbox), sandbox); err == nil {
-			if sandbox.Status.Phase == boxyv1.SandboxPhaseRunning {
-				return s.sandboxToResponse(sandbox), nil
-			}
-			if sandbox.Status.Phase == boxyv1.SandboxPhaseTerminated {
-				return nil, fmt.Errorf("sandbox terminated: %s", sandbox.Status.Message)
-			}
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timeout waiting for sandbox to become running")
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
-}
-
-func (s *Server) sandboxToResponse(sb *boxyv1.Sandbox) *api.SandboxResponseBody {
-	phase := string(sb.Status.Phase)
-	if phase == "" {
-		phase = "Pending"
-	}
-	return &api.SandboxResponseBody{
-		SandboxID: sb.Spec.SandboxID,
-		SessionID: sb.Spec.SessionID,
-		Owner:     sb.Spec.Owner,
-		Runtime:   "nsjail",
-		PodRef:    api.PodRef{Namespace: s.cfg.SandboxNamespace, Name: sb.Status.ControllerPod},
-		Phase:     phase,
-		Ready:     sb.Status.Phase == boxyv1.SandboxPhaseRunning,
-	}
-}
-
-func (s *Server) controllerURL(sandbox *boxyv1.Sandbox) string {
-	scheme := "https"
-	if s.cfg.MTLSDisabled {
-		scheme = "http"
-	}
-	return fmt.Sprintf("%s://%s:%d", scheme, sandbox.Status.ControllerAddress, sandbox.Status.Port)
-}
-
-func (s *Server) touchLastExec(sandbox *boxyv1.Sandbox) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	patch := client.MergeFrom(sandbox.DeepCopy())
-	now := metav1.Now()
-	sandbox.Status.LastExecAt = &now
-	if err := s.k8sClient.Status().Patch(ctx, sandbox, patch); err != nil {
-		s.log.Warn("failed to patch lastExecAt", "sandbox", sandbox.Name, "err", err)
-	}
+	return &api.SandboxConfigResponse{SandboxID: body.SandboxID, TTLSeconds: body.TTLSeconds}, nil
 }
 
 // EnsureDefaultSandbox creates the default sandbox CR if it doesn't exist.
@@ -530,10 +404,6 @@ func (s *Server) resolveDefaultSandboxID(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("default sandbox is disabled")
 	}
 	id := s.cfg.DefaultSandboxConfig.SandboxID
-	existing, _ := s.lookupSandbox(ctx, id)
-	if existing != nil && existing.Status.Phase == boxyv1.SandboxPhaseRunning {
-		return id, nil
-	}
 	if err := s.EnsureDefaultSandbox(ctx); err != nil {
 		return "", err
 	}

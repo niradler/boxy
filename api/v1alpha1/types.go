@@ -18,20 +18,15 @@ const (
 )
 
 // +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=sbx
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="SandboxID",type=string,JSONPath=".spec.sandboxId"
-// +kubebuilder:printcolumn:name="Controller",type=string,JSONPath=".status.controllerPod"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// Sandbox is a single sandbox VM instance managed by the boxy operator.
 type Sandbox struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SandboxSpec   `json:"spec,omitempty"`
-	Status SandboxStatus `json:"status,omitempty"`
+	Spec SandboxSpec `json:"spec,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -45,8 +40,6 @@ type SandboxList struct {
 
 type SandboxSpec struct {
 	SandboxID       string                    `json:"sandboxId"`
-	SessionID       string                    `json:"sessionId"`
-	Owner           string                    `json:"owner"`
 	TTLSeconds      int                       `json:"ttlSeconds,omitempty"`
 	Env             map[string]string         `json:"env,omitempty"`
 	AllowedBinaries []string                  `json:"allowedBinaries,omitempty"`
@@ -54,20 +47,6 @@ type SandboxSpec struct {
 	Network         *api.SandboxNetworkConfig `json:"network,omitempty"`
 	Volumes         []api.VolumeMount         `json:"volumes,omitempty"`
 	Patches         []api.SandboxPatch        `json:"patches,omitempty"`
-	RetentionPeriod *metav1.Duration          `json:"retentionPeriod,omitempty"`
-}
-
-type SandboxStatus struct {
-	Phase             SandboxPhase `json:"phase,omitempty"`
-	ControllerPool    string       `json:"controllerPool,omitempty"`
-	ControllerPod     string       `json:"controllerPod,omitempty"`
-	ControllerAddress string       `json:"controllerAddress,omitempty"`
-	Port              int32        `json:"port,omitempty"`
-	CreatedAt         *metav1.Time `json:"createdAt,omitempty"`
-	ExpiresAt         *metav1.Time `json:"expiresAt,omitempty"`
-	TerminatedAt      *metav1.Time `json:"terminatedAt,omitempty"`
-	LastExecAt        *metav1.Time `json:"lastExecAt,omitempty"`
-	Message           string       `json:"message,omitempty"`
 }
 
 const (
