@@ -4,12 +4,16 @@ metadata:
   name: boxy-operator
   namespace: {{ include "boxy.sandboxNamespace" . }}
 rules:
-  # Sandbox CRD
+  # Sandbox config (read-only for operator + finalizer updates)
   - apiGroups: ["boxy.dev"]
     resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Session CRD
+  - apiGroups: ["boxy.dev"]
+    resources: ["sessions"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["boxy.dev"]
-    resources: ["sandboxes/status"]
+    resources: ["sessions/status"]
     verbs: ["get", "update", "patch"]
   # ControllerPool CRD
   - apiGroups: ["boxy.dev"]

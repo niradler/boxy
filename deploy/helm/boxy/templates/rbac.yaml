@@ -6,9 +6,12 @@ metadata:
 rules:
   - apiGroups: ["boxy.dev"]
     resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["boxy.dev"]
+    resources: ["sessions"]
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: ["boxy.dev"]
-    resources: ["sandboxes/status"]
+    resources: ["sessions/status"]
     verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
