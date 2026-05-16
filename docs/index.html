@@ -170,7 +170,7 @@
       </div>
       <div class="comp-sandbox border-2 rounded-xl p-4">
         <div class="text-xs font-semibold text-amber-700 uppercase tracking-widest mb-3">nsjail sandbox isolation layers</div>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div class="bg-white rounded-lg border border-amber-200 p-3 text-center">
             <div class="text-xl mb-2">🗂️</div>
             <div class="text-xs font-semibold text-gray-800 mb-1">Mount Namespace</div>
@@ -190,6 +190,11 @@
             <div class="text-xl mb-2">⚡</div>
             <div class="text-xs font-semibold text-gray-800 mb-1">cgroup + rlimits</div>
             <div class="text-xs text-gray-500 leading-relaxed">memoryMb via cgroup<br>cpu / nofile / nproc<br>wall-clock timeout</div>
+          </div>
+          <div class="bg-white rounded-lg border border-amber-200 p-3 text-center">
+            <div class="text-xl mb-2">🪝</div>
+            <div class="text-xs font-semibold text-gray-800 mb-1">Lifecycle Hooks</div>
+            <div class="text-xs text-gray-500 leading-relaxed">setupScript on create<br>teardownScript on delete<br>per-sandbox scriptEnv</div>
           </div>
         </div>
       </div>
@@ -312,7 +317,7 @@
           <div class="flow-arrow">↓</div>
           <div class="flow-step"><span class="font-semibold text-purple-600 text-xs">boxy-operator</span><br>Watches CR · bin-packs to a controller pod · sets phase: Creating</div>
           <div class="flow-arrow">↓</div>
-          <div class="flow-step"><span class="font-semibold text-green-600 text-xs">boxy-controller</span><br>POST /v1/sandboxes · mkdir /workspace · nsjail ready</div>
+          <div class="flow-step"><span class="font-semibold text-green-600 text-xs">boxy-controller</span><br>POST /v1/sandboxes · mkdir /workspace · runs setupScript (if set) · nsjail ready</div>
           <div class="flow-arrow">↓</div>
           <div class="flow-step"><span class="font-semibold text-purple-600 text-xs">boxy-operator</span><br>Sets phase: Running</div>
           <div class="flow-arrow">↓</div>
@@ -764,6 +769,9 @@ curl -sS \
                 <tr><td class="px-4 py-2 font-mono">network.usePasta</td><td class="px-4 py-2">bool</td><td class="px-4 py-2 text-gray-500">Use pasta instead of MACVLAN for networking</td></tr>
                 <tr><td class="px-4 py-2 font-mono">volumes</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{guestPath, type, hostPath, sizeMb, readonly}</td></tr>
                 <tr><td class="px-4 py-2 font-mono">patches</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{type, path, content, bytes, hostPath, mode, replace}</td></tr>
+                <tr><td class="px-4 py-2 font-mono">setupScript</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Controller-side executable. Runs after provisioning</td></tr>
+                <tr><td class="px-4 py-2 font-mono">teardownScript</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Controller-side executable. Runs before cleanup</td></tr>
+                <tr><td class="px-4 py-2 font-mono">scriptEnv</td><td class="px-4 py-2">map&lt;string&gt;</td><td class="px-4 py-2 text-gray-500">Custom env vars for setup/teardown scripts</td></tr>
               </tbody>
             </table>
           </div>
@@ -781,7 +789,11 @@ spec:
     memoryMb: 512
     vcpus: 2
   network:
-    allowInternetAccess: false</code></pre>
+    allowInternetAccess: true
+  setupScript: /opt/boxy/scripts/setup.sh
+  teardownScript: /opt/boxy/scripts/teardown.sh
+  scriptEnv:
+    CUSTOMER_TIER: premium</code></pre>
         </div>
       </div>
     </div>
