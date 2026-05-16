@@ -199,6 +199,9 @@ func (r *SessionReconciler) reconcileCreating(ctx context.Context, session *boxy
 		Volumes:         sb.Spec.Volumes,
 		Patches:         sb.Spec.Patches,
 		TTLSeconds:      sb.Spec.TTLSeconds,
+		SetupScript:     sb.Spec.SetupScript,
+		TeardownScript:  sb.Spec.TeardownScript,
+		ScriptEnv:       sb.Spec.ScriptEnv,
 	}
 
 	if err := r.ctrlClient.CreateSandbox(ctx, baseURL, req); err != nil {

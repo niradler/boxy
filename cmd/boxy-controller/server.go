@@ -24,6 +24,9 @@ type createSandboxReq struct {
 	Volumes         []api.VolumeMount         `json:"volumes,omitempty"`
 	Patches         []api.SandboxPatch        `json:"patches,omitempty"`
 	TTLSeconds      int                       `json:"ttl_seconds,omitempty"`
+	SetupScript     string                    `json:"setup_script,omitempty"`
+	TeardownScript  string                    `json:"teardown_script,omitempty"`
+	ScriptEnv       map[string]string         `json:"script_env,omitempty"`
 }
 
 type createSandboxResp struct {
@@ -137,6 +140,9 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Volumes:         req.Volumes,
 		Patches:         req.Patches,
 		TTLSeconds:      req.TTLSeconds,
+		SetupScript:     req.SetupScript,
+		TeardownScript:  req.TeardownScript,
+		ScriptEnv:       req.ScriptEnv,
 	}
 
 	if err := s.adapter.Create(r.Context(), body); err != nil {

@@ -47,6 +47,9 @@ type SandboxSpec struct {
 	Network         *api.SandboxNetworkConfig `json:"network,omitempty"`
 	Volumes         []api.VolumeMount         `json:"volumes,omitempty"`
 	Patches         []api.SandboxPatch        `json:"patches,omitempty"`
+	SetupScript     string                    `json:"setupScript,omitempty"`
+	TeardownScript  string                    `json:"teardownScript,omitempty"`
+	ScriptEnv       map[string]string         `json:"scriptEnv,omitempty"`
 }
 
 const (

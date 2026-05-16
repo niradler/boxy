@@ -95,6 +95,13 @@ func (in *SandboxSpec) DeepCopyInto(out *SandboxSpec) {
 		*out = make([]api.SandboxPatch, len(*in))
 		copy(*out, *in)
 	}
+	if in.ScriptEnv != nil {
+		in, out := &in.ScriptEnv, &out.ScriptEnv
+		*out = make(map[string]string, len(*in))
+		for k, v := range *in {
+			(*out)[k] = v
+		}
+	}
 }
 
 func (in *SandboxSpec) DeepCopy() *SandboxSpec {

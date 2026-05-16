@@ -88,6 +88,9 @@ type SandboxCreateBody struct {
 	Network         *SandboxNetworkConfig `json:"network,omitempty"`
 	Volumes         []VolumeMount         `json:"volumes,omitempty"`
 	Patches         []SandboxPatch        `json:"patches,omitempty"`
+	SetupScript     string                `json:"setupScript,omitempty"`
+	TeardownScript  string                `json:"teardownScript,omitempty"`
+	ScriptEnv       map[string]string     `json:"scriptEnv,omitempty"`
 }
 
 type ErrorBody struct {

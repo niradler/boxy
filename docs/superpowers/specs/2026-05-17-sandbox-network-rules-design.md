@@ -38,14 +38,17 @@ type SandboxCreateBody struct {
     Patches         []SandboxPatch        `json:"patches,omitempty"`
 
     // New
-    SetupScript    string `json:"setupScript,omitempty"`
-    TeardownScript string `json:"teardownScript,omitempty"`
+    SetupScript    string            `json:"setupScript,omitempty"`
+    TeardownScript string            `json:"teardownScript,omitempty"`
+    ScriptEnv      map[string]string `json:"scriptEnv,omitempty"`
 }
 ```
 
 `SetupScript` is a path to an executable on the controller filesystem. Boxy runs it after all sandbox resources are provisioned (workspace, bins, netns if applicable) but before returning success. It runs on the controller, not inside the sandbox.
 
 `TeardownScript` runs before sandbox resources are cleaned up.
+
+`ScriptEnv` is a map of custom environment variables injected into both setup and teardown scripts. These are set from the Sandbox CRD, allowing the CRD author to pass arbitrary identifiers and configuration to the scripts (e.g., customer ID, tier, region, policy name).
 
 **Hook contract:**
 
@@ -55,6 +58,7 @@ type SandboxCreateBody struct {
   - `BOXY_SANDBOX_ROOT` -- sandbox base directory
   - `BOXY_WORKSPACE` -- workspace directory path
   - `BOXY_NETNS_NAME` -- netns name (only set if a persistent netns was created)
+  - All key-value pairs from `ScriptEnv`
 - exit 0: success
 - exit non-zero: sandbox creation fails, all resources cleaned up
 
@@ -171,7 +175,8 @@ If sandbox has netnsName:
 
 | Component | Change |
 |---|---|
-| `SandboxCreateBody` | Add `SetupScript`, `TeardownScript` fields |
+| `SandboxCreateBody` | Add `SetupScript`, `TeardownScript`, `ScriptEnv` fields |
+| `SandboxSpec` (CRD) | Add `SetupScript`, `TeardownScript`, `ScriptEnv` fields |
 | `SandboxNetworkConfig` | Add `UseVeth` field. Dead fields removed (Rules, Ports, DNS, Secrets, MaxConnections, TrustHostCAs). |
 | `sandbox` struct | Add `netnsName string`, `pastaCmd *exec.Cmd` fields |
 | `NsjailAdapter.Create` | Set up persistent netns if connectivity backend specified, then run setup script if set. |
