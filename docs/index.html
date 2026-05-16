@@ -505,9 +505,12 @@ curl -sS \
               <tr><td class="px-4 py-2 font-mono">env</td><td class="px-4 py-2">map</td><td class="px-4 py-2 text-gray-500">Max 64 keys. KUBERNETES_* / BOXY_* blocked</td></tr>
               <tr><td class="px-4 py-2 font-mono">allowedBinaries</td><td class="px-4 py-2">string[]</td><td class="px-4 py-2 text-gray-500">Whitelist of binaries to bind-mount</td></tr>
               <tr><td class="px-4 py-2 font-mono">vm</td><td class="px-4 py-2">object</td><td class="px-4 py-2 text-gray-500">memoryMb, vcpus, workdir, shell, hostname, rlimits, scripts…</td></tr>
-              <tr><td class="px-4 py-2 font-mono">network</td><td class="px-4 py-2">object</td><td class="px-4 py-2 text-gray-500">allowInternetAccess, rules, ports, dns, secrets, macvlan…</td></tr>
+              <tr><td class="px-4 py-2 font-mono">network</td><td class="px-4 py-2">object</td><td class="px-4 py-2 text-gray-500">allowInternetAccess, macvlan, usePasta</td></tr>
               <tr><td class="px-4 py-2 font-mono">volumes</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{guestPath, type, hostPath, sizeMb, readonly}</td></tr>
               <tr><td class="px-4 py-2 font-mono">patches</td><td class="px-4 py-2">object[]</td><td class="px-4 py-2 text-gray-500">{type, path, content, bytes, hostPath, mode, replace}</td></tr>
+              <tr><td class="px-4 py-2 font-mono">setupScript</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Path to executable on controller. Runs after provisioning</td></tr>
+              <tr><td class="px-4 py-2 font-mono">teardownScript</td><td class="px-4 py-2">string</td><td class="px-4 py-2 text-gray-500">Path to executable on controller. Runs before cleanup</td></tr>
+              <tr><td class="px-4 py-2 font-mono">scriptEnv</td><td class="px-4 py-2">map</td><td class="px-4 py-2 text-gray-500">Custom env vars injected into setup/teardown scripts</td></tr>
             </tbody>
           </table>
         </div>
