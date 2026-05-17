@@ -1,22 +1,22 @@
 # boxy
 
-> **Early release — single-tenant only.** Do not mix sandboxes from different tenants on the same node. The isolation model (nsjail + shared rootfs, mTLS between components) is designed for a single trusted tenant per cluster. Multi-tenant workloads require additional network policies, separate node pools, and a security review before deployment.
+> **Early release - single-tenant only.** Do not mix sandboxes from different tenants on the same node. The isolation model (nsjail + shared rootfs, mTLS between components) is designed for a single trusted tenant per cluster. Multi-tenant workloads require additional network policies, separate node pools, and a security review before deployment.
 
-**Kubernetes-native sandbox runtime.** Run isolated shell commands inside ephemeral Linux environments via a clean HTTP API or MCP — no VMs, no hypervisors, no hardware dependencies.
+**Kubernetes-native sandbox runtime.** Run isolated shell commands inside ephemeral Linux environments via a clean HTTP API or MCP - no VMs, no hypervisors, no hardware dependencies.
 
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Helm chart](https://img.shields.io/badge/Helm-v0.0.3-0F1689?logo=helm)](oci://ghcr.io/niradler/charts/boxy)
 
-Each sandbox is an **nsjail** process jail: isolated filesystem, network namespace, and resource limits backed by a shared read-only Ubuntu 24.04 rootfs. No kernel modules, no container runtimes, no `/dev/kvm` — just a standard Linux node.
+Each sandbox is an **nsjail** process jail: isolated filesystem, network namespace, and resource limits backed by a shared read-only Ubuntu 24.04 rootfs. No kernel modules, no container runtimes, no `/dev/kvm` - just a standard Linux node.
 
 ## Architecture
 
 | Component | Language | Role |
 |---|---|---|
-| **boxy-router** | Go | Stateless HTTP frontend — auth, API, MCP server, sandbox CR management |
-| **boxy-operator** | Go | Kubernetes controller — bin-packing, StatefulSet auto-scaling, TTL expiry, ControllerPool status |
-| **boxy-controller** | Go | Per-node nsjail daemon — runs actual sandboxes, exposes mTLS HTTP API |
+| **boxy-router** | Go | Stateless HTTP frontend - auth, API, MCP server, sandbox CR management |
+| **boxy-operator** | Go | Kubernetes controller - bin-packing, StatefulSet auto-scaling, TTL expiry, ControllerPool status |
+| **boxy-controller** | Go | Per-node nsjail daemon - runs actual sandboxes, exposes mTLS HTTP API |
 
 ```
 Client --(Bearer)--> [boxy-router  Deployment × N]
@@ -41,12 +41,12 @@ For a deep dive into request flows, scaling algorithms, storage, failure modes, 
 
 Every sandbox gets:
 
-- **Read-only base OS** — Ubuntu 24.04 rootfs mounted read-only. Sandboxes cannot modify system files or contaminate each other.
-- **Private `/workspace`** — writable directory bind-mounted per sandbox. Persists across multiple execs within the same sandbox lifetime.
-- **Ephemeral `/tmp`** — fresh tmpfs per exec, discarded when the command exits.
-- **Network namespace isolation** — sandboxes have no external network access by default. `network.allowInternetAccess: true` opts out.
-- **cgroup memory cap** — `vm.memoryMb` enforced via nsjail `--cgroup_mem_max`.
-- **POSIX rlimits** — `as`, `core`, `cpu`, `fsize`, `nofile`, `nproc`, `stack` configurable per sandbox.
+- **Read-only base OS** - Ubuntu 24.04 rootfs mounted read-only. Sandboxes cannot modify system files or contaminate each other.
+- **Private `/workspace`** - writable directory bind-mounted per sandbox. Persists across multiple execs within the same sandbox lifetime.
+- **Ephemeral `/tmp`** - fresh tmpfs per exec, discarded when the command exits.
+- **Network namespace isolation** - sandboxes have no external network access by default. `network.allowInternetAccess: true` opts out.
+- **cgroup memory cap** - `vm.memoryMb` enforced via nsjail `--cgroup_mem_max`.
+- **POSIX rlimits** - `as`, `core`, `cpu`, `fsize`, `nofile`, `nproc`, `stack` configurable per sandbox.
 
 ## Lifecycle hooks
 
@@ -99,7 +99,7 @@ Scripts must be pre-baked on the controller image or mounted via a volume. The c
 - Docker for building images
 - Go ≥ 1.26 for local development
 
-### Install with Helm (OCI registry — recommended)
+### Install with Helm (OCI registry - recommended)
 
 Images are published to Docker Hub and the Helm chart to GHCR OCI on every release.
 
@@ -163,10 +163,10 @@ Create a sandbox config. Sessions created from this config become running sandbo
 | Field | Type | Description |
 |---|---|---|
 | `ttlSeconds` | int | Sandbox TTL (sliding window, refreshed on each exec). `0` = no expiry. |
-| `env` | map | Environment variables explicitly passed to the sandbox. `KUBERNETES_*` and `BOXY_*` prefixes are blocked. Max 64 keys. Sandboxes receive only these keys plus `PATH` and `HOME=/workspace` — no host environment leaks through. |
-| `allowedBinaries` | string[] | Binaries (e.g. `"curl"`, `"python3"`) bind-mounted read-only from `BOXY_NSJAIL_BINARIES_DIR` (`/usr/local/bin`) on the controller into the sandbox. Only listed binaries are accessible; an empty list mounts nothing. Binaries must exist on the controller image — use `Dockerfile.controller.dev` (or extend it) to pre-bake tools. See [docs/architecture.md §4.3](docs/architecture.md) for how to extend the dev image. |
-| `vm` | object | Resource and identity config — see below. |
-| `network` | object | Network policy — see below. |
+| `env` | map | Environment variables explicitly passed to the sandbox. `KUBERNETES_*` and `BOXY_*` prefixes are blocked. Max 64 keys. Sandboxes receive only these keys plus `PATH` and `HOME=/workspace` - no host environment leaks through. |
+| `allowedBinaries` | string[] | Binaries (e.g. `"curl"`, `"python3"`) bind-mounted read-only from `BOXY_NSJAIL_BINARIES_DIR` (`/usr/local/bin`) on the controller into the sandbox. Only listed binaries are accessible; an empty list mounts nothing. Binaries must exist on the controller image - use `Dockerfile.controller.dev` (or extend it) to pre-bake tools. See [docs/architecture.md §4.3](docs/architecture.md) for how to extend the dev image. |
+| `vm` | object | Resource and identity config - see below. |
+| `network` | object | Network policy - see below. |
 | `volumes` | array | Extra mounts inside the sandbox. |
 | `patches` | array | Files to write/symlink into workspace before exec. |
 | `setupScript` | string | Path to executable on controller. Runs after provisioning. Exit non-zero fails sandbox creation. |
@@ -221,8 +221,27 @@ Execute a command inside an existing session. If `sessionId` is omitted, the rou
 | `args` | string[] | Command arguments. |
 | `env` | map | Per-exec env overrides. |
 | `timeoutSeconds` | int | Required. Hard wall-clock timeout enforced by nsjail (SIGKILL). |
+| `pty` | bool | Optional (default `false`). Allocate a PTY. Stdout and stderr are merged in `stdout`. |
 
 Response: `{ "exitCode", "stdout", "stderr", "timedOut" }`.
+
+### `POST /v1/sessions/exec/stream`
+
+Execute a command and receive output incrementally as NDJSON over HTTP chunked transfer. Request body is identical to `/v1/sessions/exec` (no `pty`). Each line is a JSON object:
+
+| Event type | Fields | Description |
+|---|---|---|
+| `stdout` | `data` | Stdout chunk. |
+| `stderr` | `data` | Stderr chunk. |
+| `truncated` | - | Output cap hit; remaining output discarded. Emitted before `exit`. |
+| `exit` | `code`, `timedOut` | Final event, always present. |
+
+```bash
+curl -sS -N -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sandboxId":"sb-1","sessionId":"s-1","command":"sh","args":["-c","echo hi"],"timeoutSeconds":30}' \
+  $BOXY_URL/v1/sessions/exec/stream
+```
 
 ### `GET /v1/sandboxes/{sandboxId}`
 
@@ -257,7 +276,7 @@ Deletes the sandbox config after active sessions are evicted/terminated.
 
 ## MCP server
 
-`POST /mcp` — [Model Context Protocol](https://modelcontextprotocol.io/) endpoint using Streamable HTTP transport (JSON-RPC 2.0), built with the [official Go SDK](https://github.com/modelcontextprotocol/go-sdk). Stateless, no session management required.
+`POST /mcp` - [Model Context Protocol](https://modelcontextprotocol.io/) endpoint using Streamable HTTP transport (JSON-RPC 2.0), built with the [official Go SDK](https://github.com/modelcontextprotocol/go-sdk). Stateless, no session management required.
 
 **Required headers:**
 
@@ -295,7 +314,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 - **Router auth:** `Authorization: Bearer <token>` required on every route. Two modes:
   - **SA token (production):** Any valid Kubernetes ServiceAccount token, validated via the TokenReview API. Caller identity is the K8s `UserInfo` (username + groups). No static secret to manage.
   - **Static token (dev/e2e):** Set `BOXY_ROUTER_TOKEN`; requests presenting this token are accepted as `dev-token` without a TokenReview call. Omit in production.
-  No per-caller RBAC — all authenticated callers have equal access.
+  No per-caller RBAC - all authenticated callers have equal access.
 - **mTLS:** Router and operator dial controllers using a CA with mutual cert verification. No hostname verification; identity is CA membership. Disable with `BOXY_MTLS_DISABLED=true` for local dev. Generate production certs with `bash local/gen-mtls-certs.sh [output-dir] [validity-days]` (default: 3 years).
 - **NetworkPolicy:** Default-deny egress on controller pods (DNS only). Per-sandbox isolation enforced by nsjail network namespaces, not Kubernetes policy.
 - **Controller pod capabilities:** `SYS_ADMIN`, `SETUID`, `SETGID`, `NET_ADMIN`, `SYS_CHROOT`, `MKNOD`, `SETPCAP`. All others dropped. `allowPrivilegeEscalation: false`.
@@ -306,7 +325,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
 | Variable | Default | Description |
 |---|---|---|
-| `BOXY_ROUTER_TOKEN` | — | Optional static dev/e2e bypass token. If set, accepted without TokenReview. Omit in production — use SA tokens instead. |
+| `BOXY_ROUTER_TOKEN` | - | Optional static dev/e2e bypass token. If set, accepted without TokenReview. Omit in production - use SA tokens instead. |
 | `BOXY_SANDBOX_NAMESPACE` | `default` | Namespace where Sandbox CRs and controller pods live. |
 | `BOXY_LISTEN_ADDR` | `:8080` | |
 | `BOXY_CONTROLLER_PORT` | `8080` | Port the controller pods listen on. |
@@ -320,17 +339,17 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | `BOXY_MAX_CONCURRENCY` | `100` | Concurrent execs per router replica. |
 | `BOXY_MAX_ARGS` | `256` | |
 | `BOXY_MAX_ENV_KEYS` | `64` | |
-| `BOXY_CONTROLLER_TOKEN` | — | Shared secret injected as `X-Boxy-Controller-Token` on every router→controller request. Must match the value set on the controller. Auto-generated by the Helm chart; override to rotate. |
+| `BOXY_CONTROLLER_TOKEN` | - | Shared secret injected as `X-Boxy-Controller-Token` on every router→controller request. Must match the value set on the controller. Auto-generated by the Helm chart; override to rotate. |
 | `BOXY_DEFAULT_SANDBOX_ENABLED` | `false` | Enable default sandbox for stateless MCP clients. |
-| `BOXY_DEFAULT_SANDBOX_CONFIG` | — | Required when enabled. JSON sandbox create body. |
+| `BOXY_DEFAULT_SANDBOX_CONFIG` | - | Required when enabled. JSON sandbox create body. |
 
 ### Operator
 
 | Variable | Default | Description |
 |---|---|---|
-| `BOXY_NAMESPACE` | — | **Required.** Namespace to watch. |
-| `BOXY_CONTROLLER_STATEFULSET_NAME` | — | Name of the controller StatefulSet. |
-| `BOXY_CONTROLLER_HEADLESS_SERVICE` | — | Headless service for pod DNS. |
+| `BOXY_NAMESPACE` | - | **Required.** Namespace to watch. |
+| `BOXY_CONTROLLER_STATEFULSET_NAME` | - | Name of the controller StatefulSet. |
+| `BOXY_CONTROLLER_HEADLESS_SERVICE` | - | Headless service for pod DNS. |
 | `BOXY_CONTROLLER_PORT` | `8080` | |
 | `BOXY_CONTROLLER_POOL_NAME` | `<statefulset-name>` | Name of the ControllerPool CR to keep in sync. Defaults to the StatefulSet name. |
 | `BOXY_MAX_SANDBOXES_PER_CONTROLLER` | `20` | Sandboxes per controller pod (bin-packing cap). |
@@ -345,7 +364,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 | Variable | Default | Description |
 |---|---|---|
 | `BOXY_CONTROLLER_PORT` | `8080` | |
-| `BOXY_CONTROLLER_TOKEN` | — | Token callers must send in `X-Boxy-Controller-Token`. Auto-generated and injected by the Helm chart. Enforced on all non-healthz endpoints. |
+| `BOXY_CONTROLLER_TOKEN` | - | Token callers must send in `X-Boxy-Controller-Token`. Auto-generated and injected by the Helm chart. Enforced on all non-healthz endpoints. |
 | `BOXY_MAX_SANDBOXES` | `20` | Max concurrent sandboxes on this pod. |
 | `BOXY_MTLS_DISABLED` | `false` | |
 | `BOXY_TLS_CERT_PATH` | `/tls/tls.crt` | |

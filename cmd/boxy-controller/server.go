@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"boxy.dev/boxy/internal/api"
@@ -39,6 +40,7 @@ type execReq struct {
 	Args           []string          `json:"args,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	PTY            bool              `json:"pty,omitempty"`
 }
 
 type execResp struct {
@@ -87,6 +89,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes", s.handleList)
 	mux.HandleFunc("DELETE /v1/sandboxes", s.handleDelete)
 	mux.HandleFunc("POST /v1/exec", s.handleExec)
+	mux.HandleFunc("POST /v1/exec/stream", s.handleExecStream)
 	return s.tokenMiddleware(mux)
 }
 
@@ -210,7 +213,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutSeconds+5)*time.Second)
 	defer cancel()
 
-	result, err := s.adapter.Exec(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds)
+	result, err := s.adapter.Exec(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds, req.PTY)
 	if err != nil {
 		code, msg := adapterErrToHTTP(err)
 		writeErr(w, code, msg)
@@ -225,6 +228,76 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 		ExitCode: result.ExitCode,
 		TimedOut: result.TimedOut,
 	})
+}
+
+func (s *server) handleExecStream(w http.ResponseWriter, r *http.Request) {
+	var req execReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.SandboxID) == "" {
+		writeErr(w, http.StatusBadRequest, "sandbox_id required")
+		return
+	}
+	if strings.TrimSpace(req.Command) == "" {
+		writeErr(w, http.StatusBadRequest, "command required")
+		return
+	}
+	if req.TimeoutSeconds <= 0 {
+		req.TimeoutSeconds = 30
+	}
+
+	select {
+	case s.execSem <- struct{}{}:
+		defer func() { <-s.execSem }()
+	default:
+		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutSeconds+5)*time.Second)
+	defer cancel()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	flusher, _ := w.(http.Flusher)
+
+	var wmu sync.Mutex
+	writeEvent := func(evtType, data string) {
+		type event struct {
+			Type string `json:"type"`
+			Data string `json:"data,omitempty"`
+		}
+		line, _ := json.Marshal(event{Type: evtType, Data: data})
+		wmu.Lock()
+		_, _ = w.Write(append(line, '\n'))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		wmu.Unlock()
+	}
+
+	result, err := s.adapter.ExecStream(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds, func(evtType, data string) {
+		writeEvent(evtType, data)
+	})
+	if err != nil {
+		writeEvent("error", err.Error())
+		return
+	}
+
+	slog.Debug("exec/stream", "sandbox", req.SandboxID, "cmd", req.Command, "exit", result.ExitCode)
+
+	type exitEvent struct {
+		Type     string `json:"type"`
+		Code     int    `json:"code"`
+		TimedOut bool   `json:"timedOut,omitempty"`
+	}
+	line, _ := json.Marshal(exitEvent{Type: "exit", Code: result.ExitCode, TimedOut: result.TimedOut})
+	_, _ = w.Write(append(line, '\n'))
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 func (s *server) truncateOutput(out string) string {

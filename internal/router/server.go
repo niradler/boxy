@@ -182,6 +182,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	mux.HandleFunc("POST /v1/sessions/exec", s.withAuth(s.withBodyLimit(s.handleSessionExec)))
+	mux.HandleFunc("POST /v1/sessions/exec/stream", s.withAuth(s.withBodyLimit(s.handleSessionExecStream)))
 	mux.HandleFunc("POST /v1/sessions", s.withAuth(s.withBodyLimit(s.handleSessionCreate)))
 	mux.HandleFunc("GET /v1/sessions", s.withAuth(s.handleSessionList))
 	mux.HandleFunc("GET /v1/sessions/{sessionId}", s.withAuth(s.handleSessionGet))
@@ -641,6 +642,7 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 		Args:           body.Args,
 		Env:            body.Env,
 		TimeoutSeconds: body.TimeoutSeconds,
+		PTY:            body.PTY,
 	})
 	if err != nil {
 		s.jsonErr(w, http.StatusBadGateway, err.Error(), "exec")
@@ -659,6 +661,134 @@ func (s *Server) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 		ExitCode: result.ExitCode,
 		TimedOut: result.TimedOut,
 	})
+}
+
+func (s *Server) handleSessionExecStream(w http.ResponseWriter, r *http.Request) {
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		s.jsonErr(w, http.StatusTooManyRequests, "concurrency limit", "too_many_in_flight")
+		return
+	}
+
+	var body api.ExecRequestBody
+	if !s.decodeBody(w, r, &body) {
+		return
+	}
+	if err := api.ValidateExecRequest(&body, s.cfg.MaxTimeoutSec, s.cfg.MaxArgs, s.cfg.MaxEnvKeys); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, err.Error(), "validation")
+		return
+	}
+
+	sessionID := strings.TrimSpace(body.SessionID)
+	if sessionID == "" {
+		sessionID = generateSessionID()
+	} else if err := api.ValidateSessionID(sessionID); err != nil {
+		s.jsonErr(w, http.StatusBadRequest, "invalid sessionId format", "validation")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(body.TimeoutSeconds)*time.Second+30*time.Second)
+	defer cancel()
+
+	session, err := s.lookupSession(ctx, sessionID)
+	if err != nil {
+		s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
+		return
+	}
+
+	sessionCreated := false
+	if session == nil || session.Status.Phase == boxyv1.SandboxPhaseTerminated {
+		if !s.requireResourceAccess(w, r, "get", "sandboxes", body.SandboxID) {
+			return
+		}
+		if !s.requireResourceAccess(w, r, "create", "sessions", sessionID) {
+			return
+		}
+		if session != nil && session.Status.Phase == boxyv1.SandboxPhaseTerminated {
+			if err := s.k8sClient.Delete(ctx, session); err != nil {
+				s.jsonErr(w, http.StatusInternalServerError, err.Error(), "delete_terminated")
+				return
+			}
+		}
+		sb, err := s.lookupSandbox(ctx, body.SandboxID)
+		if err != nil {
+			s.jsonErr(w, http.StatusInternalServerError, err.Error(), "store")
+			return
+		}
+		if sb == nil {
+			s.jsonErr(w, http.StatusNotFound, "sandbox config not found", "sandbox_lookup")
+			return
+		}
+		session, err = s.createAndWaitForSession(ctx, sessionID, body.SandboxID, body.Owner)
+		if err != nil {
+			s.jsonErr(w, http.StatusBadGateway, err.Error(), "create_session")
+			return
+		}
+		sessionCreated = true
+	} else {
+		if session.Spec.SandboxID != body.SandboxID {
+			s.jsonErr(w, http.StatusBadRequest, "sessionId does not belong to sandboxId", "validation")
+			return
+		}
+		if !s.requireResourceAccess(w, r, "update", "sessions", session.Name) {
+			return
+		}
+	}
+
+	if session.Status.Phase != boxyv1.SandboxPhaseRunning {
+		s.jsonErr(w, http.StatusServiceUnavailable, "session not ready", "session_not_ready")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Boxy-Session-Id", sessionID)
+	if sessionCreated {
+		w.Header().Set("X-Boxy-Session-Created", "true")
+	}
+	flusher, _ := w.(http.Flusher)
+
+	writeEvent := func(evtType, data string) {
+		type event struct {
+			Type string `json:"type"`
+			Data string `json:"data,omitempty"`
+		}
+		line, _ := json.Marshal(event{Type: evtType, Data: data})
+		_, _ = w.Write(append(line, '\n'))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	baseURL := s.controllerURLFromSession(session)
+	result, err := s.ctrlClient.ExecStream(ctx, baseURL, ctrlclient.ExecReq{
+		SandboxID:      session.Spec.SessionID,
+		Command:        body.Command,
+		Args:           body.Args,
+		Env:            body.Env,
+		TimeoutSeconds: body.TimeoutSeconds,
+	}, func(evtType, data string) {
+		writeEvent(evtType, data)
+	})
+	if err != nil {
+		writeEvent("error", err.Error())
+		return
+	}
+
+	go s.touchLastExecSession(session.DeepCopy())
+
+	type exitEvent struct {
+		Type     string `json:"type"`
+		Code     int    `json:"code"`
+		TimedOut bool   `json:"timedOut,omitempty"`
+	}
+	line, _ := json.Marshal(exitEvent{Type: "exit", Code: result.ExitCode, TimedOut: result.TimedOut})
+	_, _ = w.Write(append(line, '\n'))
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
