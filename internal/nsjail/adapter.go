@@ -21,7 +21,16 @@ import (
 
 type Adapter interface {
 	Create(ctx context.Context, req *api.SandboxCreateBody) error
-	Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int) (*api.ExecResponseBody, error)
+	// Exec runs a command synchronously and returns the collected output.
+	// When pty is true a PTY is allocated so the command has a controlling
+	// terminal; stdout and stderr are merged into ExecResponseBody.Stdout.
+	Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, pty bool) (*api.ExecResponseBody, error)
+	// ExecStream runs a command and delivers output incrementally via onEvent.
+	// onEvent is called with ("stdout"|"stderr", data) for each chunk, and
+	// ("truncated", "") once the output cap is reached. It may be called from
+	// multiple goroutines concurrently. The returned ExecResponseBody carries
+	// the final (truncated, if applicable) stdout/stderr.
+	ExecStream(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, onEvent func(string, string)) (*api.ExecResponseBody, error)
 	Delete(ctx context.Context, sandboxID string) error
 	ListIDs() []string
 	Count() int
@@ -123,6 +132,7 @@ func (a *NsjailAdapter) Exec(
 	args []string,
 	env map[string]string,
 	timeoutSecs int,
+	pty bool,
 ) (*api.ExecResponseBody, error) {
 	a.mu.RLock()
 	sb, ok := a.sandboxes[sandboxID]
@@ -137,7 +147,6 @@ func (a *NsjailAdapter) Exec(
 	}
 
 	resolvedCmd := resolveCommandInChroot(command, rootfs)
-
 	cfg := a.buildNsjailConfig(sb, rootfs, env, timeoutSecs)
 
 	cfgFile, err := os.CreateTemp("", "nsjail-*.pb.txt")
@@ -155,16 +164,15 @@ func (a *NsjailAdapter) Exec(
 	cmdArgs := append([]string{"--config", cfgFile.Name(), "--"}, resolvedCmd)
 	cmdArgs = append(cmdArgs, args...)
 
-	var deadline context.Context
-	var cancel context.CancelFunc
-	if timeoutSecs > 0 {
-		deadline, cancel = context.WithTimeout(ctx, time.Duration(timeoutSecs+5)*time.Second)
-	} else {
-		deadline, cancel = context.WithCancel(ctx)
-	}
+	deadline, cancel := a.execContext(ctx, timeoutSecs)
 	defer cancel()
 
 	nsjailCmd := exec.CommandContext(deadline, a.cfg.NsjailPath, cmdArgs...)
+
+	if pty {
+		return a.execPTY(deadline, nsjailCmd, timeoutSecs)
+	}
+
 	var stdout, stderr limitWriter
 	if a.cfg.MaxOutputBytes > 0 {
 		stdout.limit = int64(a.cfg.MaxOutputBytes)
@@ -174,6 +182,145 @@ func (a *NsjailAdapter) Exec(
 	nsjailCmd.Stderr = &stderr
 
 	runErr := nsjailCmd.Run()
+	return a.buildExecResponse(runErr, deadline, timeoutSecs, stdout.String(), stderr.String())
+}
+
+func (a *NsjailAdapter) ExecStream(
+	ctx context.Context,
+	sandboxID string,
+	command string,
+	args []string,
+	env map[string]string,
+	timeoutSecs int,
+	onEvent func(string, string),
+) (*api.ExecResponseBody, error) {
+	a.mu.RLock()
+	sb, ok := a.sandboxes[sandboxID]
+	a.mu.RUnlock()
+	if !ok {
+		return nil, errNotFound(sandboxID)
+	}
+
+	rootfs := a.cfg.DefaultRootfs
+	if sb.req.VM != nil && sb.req.VM.Image != "" {
+		rootfs = sb.req.VM.Image
+	}
+
+	resolvedCmd := resolveCommandInChroot(command, rootfs)
+	cfg := a.buildNsjailConfig(sb, rootfs, env, timeoutSecs)
+
+	cfgFile, err := os.CreateTemp("", "nsjail-*.pb.txt")
+	if err != nil {
+		return nil, errInternal(fmt.Sprintf("create temp config: %v", err))
+	}
+	defer os.Remove(cfgFile.Name())
+
+	if _, err := cfgFile.WriteString(cfg.ToTextProto()); err != nil {
+		cfgFile.Close()
+		return nil, errInternal(fmt.Sprintf("write nsjail config: %v", err))
+	}
+	cfgFile.Close()
+
+	cmdArgs := append([]string{"--config", cfgFile.Name(), "--"}, resolvedCmd)
+	cmdArgs = append(cmdArgs, args...)
+
+	deadline, cancel := a.execContext(ctx, timeoutSecs)
+	defer cancel()
+
+	nsjailCmd := exec.CommandContext(deadline, a.cfg.NsjailPath, cmdArgs...)
+
+	stdoutPipe, err := nsjailCmd.StdoutPipe()
+	if err != nil {
+		return nil, errInternal(fmt.Sprintf("stdout pipe: %v", err))
+	}
+	stderrPipe, err := nsjailCmd.StderrPipe()
+	if err != nil {
+		return nil, errInternal(fmt.Sprintf("stderr pipe: %v", err))
+	}
+
+	if err := nsjailCmd.Start(); err != nil {
+		return nil, errInternal(fmt.Sprintf("nsjail start: %v", err))
+	}
+
+	// Stream stdout and stderr concurrently; cap total output.
+	maxBytes := int64(a.cfg.MaxOutputBytes)
+	var (
+		totalMu   sync.Mutex
+		totalRead int64
+		truncated bool
+	)
+	var stdoutBuf, stderrBuf limitWriter
+	if maxBytes > 0 {
+		stdoutBuf.limit = maxBytes
+		stderrBuf.limit = maxBytes
+	}
+
+	drain := func(pipe io.ReadCloser, stream string, buf *limitWriter) {
+		chunk := make([]byte, 4096)
+		for {
+			n, err := pipe.Read(chunk)
+			if n > 0 {
+				data := chunk[:n]
+
+				totalMu.Lock()
+				var toSend []byte
+				var emitTruncated bool
+				if maxBytes <= 0 {
+					toSend = data
+					totalRead += int64(len(data))
+				} else if totalRead < maxBytes {
+					remaining := maxBytes - totalRead
+					if int64(len(data)) > remaining {
+						toSend = data[:remaining]
+					} else {
+						toSend = data
+					}
+					totalRead += int64(len(toSend))
+					if totalRead >= maxBytes && !truncated {
+						truncated = true
+						emitTruncated = true
+					}
+				}
+				totalMu.Unlock()
+
+				if len(toSend) > 0 {
+					buf.Write(toSend) //nolint:errcheck
+					onEvent(stream, string(toSend))
+				}
+				if emitTruncated {
+					onEvent("truncated", "")
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); drain(stdoutPipe, "stdout", &stdoutBuf) }()
+	go func() { defer wg.Done(); drain(stderrPipe, "stderr", &stderrBuf) }()
+
+	waitErr := nsjailCmd.Wait()
+	wg.Wait()
+
+	return a.buildExecResponse(waitErr, deadline, timeoutSecs, stdoutBuf.String(), stderrBuf.String())
+}
+
+func (a *NsjailAdapter) execContext(ctx context.Context, timeoutSecs int) (context.Context, context.CancelFunc) {
+	if timeoutSecs > 0 {
+		return context.WithTimeout(ctx, time.Duration(timeoutSecs+5)*time.Second)
+	}
+	return context.WithCancel(ctx)
+}
+
+func (a *NsjailAdapter) buildExecResponse(
+	runErr error,
+	deadline context.Context,
+	timeoutSecs int,
+	stdout, stderr string,
+) (*api.ExecResponseBody, error) {
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
@@ -182,8 +329,8 @@ func (a *NsjailAdapter) Exec(
 			// reliable signal that the sandbox's configured timeout was hit.
 			timedOut := timeoutSecs > 0 && exitErr.ExitCode() == 137
 			return &api.ExecResponseBody{
-				Stdout:   stdout.String(),
-				Stderr:   stderr.String(),
+				Stdout:   stdout,
+				Stderr:   stderr,
 				ExitCode: exitErr.ExitCode(),
 				TimedOut: timedOut,
 			}, nil
@@ -197,13 +344,13 @@ func (a *NsjailAdapter) Exec(
 		}
 		return nil, errInternal(fmt.Sprintf("nsjail error: %v", runErr))
 	}
-
 	return &api.ExecResponseBody{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
+		Stdout:   stdout,
+		Stderr:   stderr,
 		ExitCode: 0,
 	}, nil
 }
+
 
 // limitWriter is an io.Writer that stops accepting data once limit bytes have
 // been written, silently discarding additional bytes. Zero limit = unlimited.

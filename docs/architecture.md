@@ -272,12 +272,19 @@ The `Adapter` interface abstracts the isolation backend — today only `nsjail` 
 ```go
 type Adapter interface {
     Create(ctx context.Context, req *api.SandboxCreateBody) error
-    Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int) (*api.ExecResponseBody, error)
+    Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, pty bool) (*api.ExecResponseBody, error)
+    ExecStream(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, onEvent func(string, string)) (*api.ExecResponseBody, error)
     Delete(ctx context.Context, sandboxID string) error
     ListIDs() []string
     Count() int
 }
 ```
+
+**PTY mode:** When `pty: true` is passed in the exec request, the controller allocates a `/dev/ptmx` master/slave PTY pair. The slave is attached to nsjail's stdin/stdout/stderr and configured as the controlling terminal (`Setsid: true`, `Setctty: true`). The parent reads from the master fd, accumulating output in the response. PTY merges stdout and stderr; the combined output is returned in `Stdout`. Useful for interactive programs that check `isatty(3)`.
+
+**Note on Landlock:** An earlier design applied a Linux Landlock LSM ruleset to the OS thread that launched nsjail as a defense-in-depth layer. This was removed because nsjail inherits the calling thread's Landlock domain via fork, which blocked `mount(MS_REC|MS_PRIVATE)` inside the new mount namespace even with `CAP_SYS_ADMIN`. Primary isolation is provided by nsjail's namespace and chroot confinement.
+
+**Streaming exec:** `POST /v1/sessions/exec/stream` and the controller's `POST /v1/exec/stream` use `io.Pipe`-backed goroutines to read stdout and stderr concurrently from nsjail, calling an `onEvent(type, data)` callback for each chunk. The router proxies these chunks to the HTTP client as NDJSON over chunked transfer encoding, flushing after each line. The MCP `bash` tool uses this path when the caller provides a `progressToken` in `_meta`, emitting `notifications/progress` per chunk while still returning the full accumulated output in the final tool result.
 
 ---
 

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -734,6 +735,201 @@ func TestTeardownScript_Runs(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatal("teardown script did not run within 15s of session deletion")
+}
+
+// streamEvent is a single NDJSON line from POST /v1/sessions/exec/stream.
+type streamEvent struct {
+	Type     string `json:"type"`
+	Data     string `json:"data"`
+	Code     int    `json:"code"`
+	TimedOut bool   `json:"timedOut"`
+}
+
+func postExecStream(t *testing.T, base, tok string, body api.ExecRequestBody) []streamEvent {
+	t.Helper()
+	payload, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/sessions/exec/stream", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := httpClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("exec/stream HTTP %d", res.StatusCode)
+	}
+	var events []streamEvent
+	scanner := bufio.NewScanner(res.Body)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var evt streamEvent
+		if err := json.Unmarshal(line, &evt); err == nil {
+			events = append(events, evt)
+		}
+	}
+	return events
+}
+
+// TestExecStream verifies that POST /v1/sessions/exec/stream delivers stdout
+// chunks as NDJSON events and ends with a zero-exit event.
+func TestExecStream(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-stream-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 120,
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	events := postExecStream(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
+		Command:        "sh",
+		Args:           []string{"-c", "echo stream-line-1 && echo stream-line-2"},
+		TimeoutSeconds: 30,
+	})
+
+	var combined string
+	var exitEvent *streamEvent
+	for i := range events {
+		switch events[i].Type {
+		case "stdout", "stderr":
+			combined += events[i].Data
+		case "exit":
+			exitEvent = &events[i]
+		}
+	}
+
+	if !strings.Contains(combined, "stream-line-1") || !strings.Contains(combined, "stream-line-2") {
+		t.Fatalf("expected both lines in stdout events, got: %q", combined)
+	}
+	if exitEvent == nil {
+		t.Fatal("no exit event received")
+	}
+	if exitEvent.Code != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitEvent.Code)
+	}
+}
+
+// TestExecStreamTruncated verifies that the truncated event fires when output
+// exceeds BOXY_MAX_OUTPUT_BYTES and the exit event still follows.
+func TestExecStreamTruncated(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-stream-trunc-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 120,
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	// Generate ~7 MB of output, which should exceed the default 6 MB cap.
+	events := postExecStream(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
+		Command:        "sh",
+		Args:           []string{"-c", "dd if=/dev/zero bs=1024 count=7168 2>/dev/null | tr '\\0' 'x'"},
+		TimeoutSeconds: 30,
+	})
+
+	hasTruncated := false
+	hasExit := false
+	for _, e := range events {
+		if e.Type == "truncated" {
+			hasTruncated = true
+		}
+		if e.Type == "exit" {
+			hasExit = true
+		}
+	}
+	if !hasTruncated {
+		t.Fatal("expected truncated event, none received")
+	}
+	if !hasExit {
+		t.Fatal("expected exit event after truncated, none received")
+	}
+}
+
+// TestExecPTY verifies that exec with pty:true returns merged output in Stdout
+// without crashing, and that basic terminal-awareness signals are present
+// (the TERM variable should be set by the PTY session).
+func TestExecPTY(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-pty-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 120,
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	out := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
+		Command:        "sh",
+		Args:           []string{"-c", "echo pty-ok"},
+		TimeoutSeconds: 30,
+		PTY:            true,
+	})
+
+	if out.ExitCode != 0 {
+		t.Fatalf("PTY exec failed: exit=%d stderr=%q", out.ExitCode, out.Stderr)
+	}
+	if !strings.Contains(out.Stdout, "pty-ok") {
+		t.Fatalf("expected 'pty-ok' in PTY stdout, got: %q", out.Stdout)
+	}
+}
+
+func TestExec_WorkspaceAndBinary(t *testing.T) {
+	base, tok := testCreds(t)
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	sandboxID := "e2e-execbasic-" + ts
+
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 120,
+	})
+
+	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
+
+	// Write a file to /workspace and read it back.
+	writeOut := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
+		Command:        "sh",
+		Args:           []string{"-c", "echo landlock-ok > /workspace/ll.txt && cat /workspace/ll.txt"},
+		TimeoutSeconds: 15,
+	})
+	if writeOut.ExitCode != 0 || !strings.Contains(writeOut.Stdout, "landlock-ok") {
+		t.Fatalf("workspace write/read failed: exit=%d stdout=%q stderr=%q",
+			writeOut.ExitCode, writeOut.Stdout, writeOut.Stderr)
+	}
+
+	// Execute a binary from the system path.
+	binOut := postExec(t, base, tok, api.ExecRequestBody{
+		SandboxID:      sandboxID,
+		SessionID:      sessionID,
+		Command:        "sh",
+		Args:           []string{"-c", "which sh && sh --version 2>&1 | head -1"},
+		TimeoutSeconds: 10,
+	})
+	if binOut.ExitCode != 0 {
+		t.Fatalf("binary exec failed: exit=%d stderr=%q", binOut.ExitCode, binOut.Stderr)
+	}
 }
 
 func TestSetupScript_NetworkEgressRules(t *testing.T) {

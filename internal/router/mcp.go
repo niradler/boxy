@@ -32,7 +32,7 @@ func (s *Server) newMCPHandler() http.Handler {
 			Name:        "bash",
 			Description: "Execute a shell command in a sandbox",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, params bashParams) (*mcp.CallToolResult, any, error) {
-			return s.mcpBashTool(ctx, sandboxID, sessionID, params)
+			return s.mcpBashTool(ctx, req, sandboxID, sessionID, params)
 		})
 
 		return mcpSrv
@@ -55,7 +55,7 @@ func toolText(text string) (*mcp.CallToolResult, any, error) {
 	}, nil, nil
 }
 
-func (s *Server) mcpBashTool(ctx context.Context, sandboxID, sessionID string, params bashParams) (*mcp.CallToolResult, any, error) {
+func (s *Server) mcpBashTool(ctx context.Context, req *mcp.CallToolRequest, sandboxID, sessionID string, params bashParams) (*mcp.CallToolResult, any, error) {
 	if params.Command == "" {
 		return toolError("command is required")
 	}
@@ -110,33 +110,72 @@ func (s *Server) mcpBashTool(ctx context.Context, sandboxID, sessionID string, p
 	defer cancel()
 
 	baseURL := s.controllerURLFromSession(session)
-	result, err := s.ctrlClient.Exec(ctx, baseURL, ctrlclient.ExecReq{
+	execReq := ctrlclient.ExecReq{
 		SandboxID:      session.Spec.SessionID,
 		Command:        "sh",
 		Args:           []string{"-c", params.Command},
 		TimeoutSeconds: params.TimeoutSeconds,
-	})
-	if err != nil {
-		return toolError("exec error: " + err.Error())
+	}
+
+	var stdout, stderr string
+	var exitCode int
+	var timedOut bool
+
+	progressToken := req.Params.GetProgressToken()
+	if progressToken != nil && req.Session != nil {
+		var stdoutBuf, stderrBuf strings.Builder
+		chunkIdx := float64(0)
+		streamResult, streamErr := s.ctrlClient.ExecStream(ctx, baseURL, execReq, func(evtType, data string) {
+			switch evtType {
+			case "stdout":
+				stdoutBuf.WriteString(data)
+			case "stderr":
+				stderrBuf.WriteString(data)
+			default:
+				return
+			}
+			chunkIdx++
+			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+				ProgressToken: progressToken,
+				Progress:      chunkIdx,
+				Message:       data,
+			})
+		})
+		if streamErr != nil {
+			return toolError("exec error: " + streamErr.Error())
+		}
+		stdout = stdoutBuf.String()
+		stderr = stderrBuf.String()
+		exitCode = streamResult.ExitCode
+		timedOut = streamResult.TimedOut
+	} else {
+		syncResult, syncErr := s.ctrlClient.Exec(ctx, baseURL, execReq)
+		if syncErr != nil {
+			return toolError("exec error: " + syncErr.Error())
+		}
+		stdout = syncResult.Stdout
+		stderr = syncResult.Stderr
+		exitCode = syncResult.ExitCode
+		timedOut = syncResult.TimedOut
 	}
 
 	go s.touchLastExecSession(session.DeepCopy())
 
-	text := result.Stdout
-	if result.Stderr != "" {
+	text := stdout
+	if stderr != "" {
 		if text != "" {
 			text += "\n"
 		}
-		text += result.Stderr
+		text += stderr
 	}
-	if result.ExitCode != 0 {
-		text += fmt.Sprintf("\n[exit code: %d]", result.ExitCode)
+	if exitCode != 0 {
+		text += fmt.Sprintf("\n[exit code: %d]", exitCode)
 	}
-	if result.TimedOut {
+	if timedOut {
 		text += "\n[timed out]"
 	}
 
-	if result.ExitCode != 0 {
+	if exitCode != 0 {
 		return toolError(text)
 	}
 	return toolText(text)

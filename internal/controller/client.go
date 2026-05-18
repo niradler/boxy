@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -131,6 +132,7 @@ type ExecReq struct {
 	Args           []string          `json:"args,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	PTY            bool              `json:"pty,omitempty"`
 }
 
 type ExecResult struct {
@@ -154,6 +156,56 @@ func (c *Client) Exec(ctx context.Context, baseURL string, req ExecReq) (*ExecRe
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ExecStream calls POST /v1/exec/stream and delivers events to onEvent as they
+// arrive. onEvent is called with ("stdout"|"stderr", data) for each chunk and
+// ("truncated", "") when the output cap is hit. It returns the final exit info.
+func (c *Client) ExecStream(ctx context.Context, baseURL string, req ExecReq, onEvent func(string, string)) (*ExecResult, error) {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/exec/stream", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, &HTTPError{Method: http.MethodPost, URL: baseURL + "/v1/exec/stream", Status: resp.StatusCode}
+	}
+
+	var result ExecResult
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		var evt struct {
+			Type     string `json:"type"`
+			Data     string `json:"data"`
+			Code     int    `json:"code"`
+			TimedOut bool   `json:"timedOut"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
+			continue
+		}
+		switch evt.Type {
+		case "stdout", "stderr", "truncated":
+			onEvent(evt.Type, evt.Data)
+		case "exit":
+			result.ExitCode = evt.Code
+			result.TimedOut = evt.TimedOut
+		case "error":
+			return nil, fmt.Errorf("exec stream: %s", evt.Data)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read stream: %w", err)
+	}
+	return &result, nil
 }
 
 func (c *Client) DeleteSandbox(ctx context.Context, baseURL string, req DeleteSandboxReq) error {

@@ -8,6 +8,7 @@ type ExecRequestBody struct {
 	Args           []string          `json:"args"`
 	Env            map[string]string `json:"env"`
 	TimeoutSeconds int               `json:"timeoutSeconds"`
+	PTY            bool              `json:"pty,omitempty"`
 }
 
 type ExecResponseBody struct {
