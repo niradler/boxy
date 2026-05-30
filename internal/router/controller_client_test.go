@@ -15,7 +15,6 @@ func TestControllerClient_HealthCheck(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// mtlsDisabled=true uses plain HTTP — no certs needed for test
 	client := router.NewControllerClient(router.ControllerClientConfig{
 		MTLSDisabled: true,
 	})

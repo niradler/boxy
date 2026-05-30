@@ -9,25 +9,41 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 
 	"boxy.dev/boxy/internal/api"
 )
 
-// mtlsServerName is the CN expected in the controller's TLS certificate.
 // Must match deploy/helm/boxy/values.yaml mtlsServerCN.
 const mtlsServerName = "boxy-controller"
 
 type HTTPError struct {
-	Method string
-	URL    string
-	Status int
+	Method  string
+	URL     string
+	Status  int
+	Message string
 }
 
 func (e *HTTPError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
 	return fmt.Sprintf("controller returned %d for %s %s", e.Status, e.Method, e.URL)
+}
+
+// newHTTPError reads the controller's JSON error body so the original message
+// (e.g. "oldString is not unique") surfaces to the caller instead of an opaque status.
+func newHTTPError(method, url string, resp *http.Response) *HTTPError {
+	he := &HTTPError{Method: method, URL: url, Status: resp.StatusCode}
+	var body api.ErrorBody
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body); err == nil {
+		he.Message = strings.TrimSpace(body.Error)
+	}
+	return he
 }
 
 func IsStaleRouteError(err error) bool {
@@ -71,7 +87,6 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 }
 
-// tokenTransport injects X-Boxy-Controller-Token on every request.
 type tokenTransport struct {
 	token string
 	base  http.RoundTripper
@@ -96,9 +111,6 @@ func buildMTLSTransport(cfg ClientConfig) http.RoundTripper {
 	if err != nil {
 		panic(fmt.Sprintf("load client keypair: %v", err))
 	}
-	// ServerName must match the CN in the controller's TLS certificate (mtlsServerCN).
-	// This ensures the router/operator only connects to genuine boxy-controller pods,
-	// not any other pod that happens to hold a CA-signed cert.
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
@@ -193,9 +205,6 @@ func (c *Client) Exec(ctx context.Context, baseURL string, req ExecReq) (*ExecRe
 	return &out, nil
 }
 
-// ExecStream calls POST /v1/exec/stream and delivers events to onEvent as they
-// arrive. onEvent is called with ("stdout"|"stderr", data) for each chunk and
-// ("truncated", "") when the output cap is hit. It returns the final exit info.
 func (c *Client) ExecStream(ctx context.Context, baseURL string, req ExecReq, onEvent func(string, string)) (*ExecResult, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -212,7 +221,7 @@ func (c *Client) ExecStream(ctx context.Context, baseURL string, req ExecReq, on
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, &HTTPError{Method: http.MethodPost, URL: baseURL + "/v1/exec/stream", Status: resp.StatusCode}
+		return nil, newHTTPError(http.MethodPost, baseURL+"/v1/exec/stream", resp)
 	}
 
 	var result ExecResult
@@ -287,7 +296,7 @@ func (c *Client) postJSON(ctx context.Context, url string, body, out any) error 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return &HTTPError{Method: http.MethodPost, URL: url, Status: resp.StatusCode}
+		return newHTTPError(http.MethodPost, url, resp)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -311,7 +320,7 @@ func (c *Client) deleteJSON(ctx context.Context, url string, body any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return &HTTPError{Method: http.MethodDelete, URL: url, Status: resp.StatusCode}
+		return newHTTPError(http.MethodDelete, url, resp)
 	}
 	return nil
 }

@@ -320,6 +320,40 @@ func TestMCP_ToolsCall_FileTools(t *testing.T) {
 	}
 }
 
+func TestMCP_ToolsCall_FileErrorMessageSurfaced(t *testing.T) {
+	const ctrlMsg = "oldString is not unique (2 matches); add context or set replaceAll"
+	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/files/edit" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.ErrorBody{Error: ctrlMsg})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ctrl.Close()
+	u, _ := url.Parse(ctrl.URL)
+	port, _ := strconv.Atoi(u.Port())
+	sess := testSession("sess-1", "sess-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sess})
+	handler := srv.Handler()
+
+	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
+		"name":      "edit_file",
+		"arguments": map[string]any{"path": "/workspace/a.txt", "oldString": "x", "newString": "y"},
+	}, mcpHeaders{sessionID: "sess-1"})
+	if code != http.StatusOK {
+		t.Fatalf("HTTP %d", code)
+	}
+	tr := parseToolResult(t, resp.Result)
+	if !tr.IsError {
+		t.Fatal("expected tool-level error")
+	}
+	if len(tr.Content) == 0 || !bytes.Contains([]byte(tr.Content[0].Text), []byte(ctrlMsg)) {
+		t.Fatalf("controller error message not surfaced; got %+v", tr.Content)
+	}
+}
+
 func TestMCP_ToolsCall_FileEmptyPathRejected(t *testing.T) {
 	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("controller should not be called for an invalid path: %s", r.URL.Path)

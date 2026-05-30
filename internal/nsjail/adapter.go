@@ -21,17 +21,9 @@ import (
 
 type Adapter interface {
 	Create(ctx context.Context, req *api.SandboxCreateBody) error
-	// Exec runs a command synchronously and returns the collected output.
-	// When pty is true a PTY is allocated so the command has a controlling
-	// terminal; stdout and stderr are merged into ExecResponseBody.Stdout.
 	Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, pty bool) (*api.ExecResponseBody, error)
-	// ExecStream runs a command and delivers output incrementally via onEvent.
-	// onEvent is called with ("stdout"|"stderr", data) for each chunk, and
-	// ("truncated", "") once the output cap is reached. It may be called from
-	// multiple goroutines concurrently. The returned ExecResponseBody carries
-	// the final (truncated, if applicable) stdout/stderr.
 	ExecStream(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, onEvent func(string, string)) (*api.ExecResponseBody, error)
-	ReadFile(ctx context.Context, sandboxID, path string) ([]byte, error)
+	ReadFile(ctx context.Context, sandboxID, path string) (data []byte, truncated bool, err error)
 	WriteFile(ctx context.Context, sandboxID, path, content string) (int, error)
 	EditFile(ctx context.Context, sandboxID, path, oldStr, newStr string, replaceAll bool) (int, error)
 	Delete(ctx context.Context, sandboxID string) error
@@ -39,7 +31,6 @@ type Adapter interface {
 	Count() int
 }
 
-// AdapterError carries an HTTP status code alongside the message.
 type AdapterError struct {
 	Code    int
 	Message string
@@ -57,16 +48,15 @@ type AdapterConfig struct {
 	DefaultRootfs  string
 	SandboxRoot    string
 	BinariesDir    string
-	MaxOutputBytes int // truncate stdout/stderr above this size; 0 = unlimited
+	MaxOutputBytes int
 }
 
 type sandbox struct {
 	req       api.SandboxCreateBody
-	workspace string // absolute path to the per-sandbox R/W workspace
-	binDir    string // absolute path to the per-sandbox /usr/local/bin mirror
+	workspace string
+	binDir    string
 }
 
-// NsjailAdapter implements Adapter using nsjail with protobuf text-format config files.
 type NsjailAdapter struct {
 	cfg       AdapterConfig
 	mu        sync.RWMutex
@@ -261,7 +251,6 @@ func (a *NsjailAdapter) ExecStream(
 		return nil, errInternal(fmt.Sprintf("nsjail start: %v", err))
 	}
 
-	// Stream stdout and stderr concurrently; cap total output.
 	maxBytes := int64(a.cfg.MaxOutputBytes)
 	var (
 		totalMu   sync.Mutex
@@ -343,9 +332,7 @@ func (a *NsjailAdapter) buildExecResponse(
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			// Exit code 137 = SIGKILL (128+9). nsjail sends SIGKILL to the child
-			// when time_limit fires and propagates the exit status, so this is the
-			// reliable signal that the sandbox's configured timeout was hit.
+			// Exit code 137 (128+9, SIGKILL) is how nsjail propagates a time_limit kill.
 			timedOut := timeoutSecs > 0 && exitErr.ExitCode() == 137
 			return &api.ExecResponseBody{
 				Stdout:   stdout,
@@ -370,8 +357,6 @@ func (a *NsjailAdapter) buildExecResponse(
 	}, nil
 }
 
-// limitWriter is an io.Writer that stops accepting data once limit bytes have
-// been written, silently discarding additional bytes. Zero limit = unlimited.
 type limitWriter struct {
 	buf   bytes.Buffer
 	limit int64
@@ -381,7 +366,7 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 	if lw.limit > 0 {
 		remaining := lw.limit - int64(lw.buf.Len())
 		if remaining <= 0 {
-			return len(p), nil // discard; report success so the process isn't killed
+			return len(p), nil
 		}
 		if int64(len(p)) > remaining {
 			p = p[:remaining]
@@ -405,15 +390,17 @@ func sandboxFilePath(p string) string {
 	return "/workspace/" + p
 }
 
-func (a *NsjailAdapter) ReadFile(ctx context.Context, sandboxID, path string) ([]byte, error) {
+func (a *NsjailAdapter) ReadFile(ctx context.Context, sandboxID, path string) (data []byte, truncated bool, err error) {
 	res, err := a.Exec(ctx, sandboxID, "sh", []string{"-c", `cat -- "$1"`, "sh", sandboxFilePath(path)}, nil, fileOpTimeoutSecs, false)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if res.ExitCode != 0 {
-		return nil, errBadRequest(fileOpError("read", res.Stderr))
+		return nil, false, errBadRequest(fileOpError("read", res.Stderr))
 	}
-	return []byte(res.Stdout), nil
+	out := []byte(res.Stdout)
+	truncated = a.cfg.MaxOutputBytes > 0 && len(out) >= a.cfg.MaxOutputBytes
+	return out, truncated, nil
 }
 
 func (a *NsjailAdapter) WriteFile(ctx context.Context, sandboxID, path string, content string) (int, error) {
@@ -433,9 +420,12 @@ func (a *NsjailAdapter) EditFile(ctx context.Context, sandboxID, path, oldStr, n
 	if oldStr == "" {
 		return 0, errBadRequest("oldString must not be empty")
 	}
-	data, err := a.ReadFile(ctx, sandboxID, path)
+	data, truncated, err := a.ReadFile(ctx, sandboxID, path)
 	if err != nil {
 		return 0, err
+	}
+	if truncated {
+		return 0, errBadRequest(fmt.Sprintf("file exceeds the %d-byte read limit; cannot edit safely, use the bash tool", a.cfg.MaxOutputBytes))
 	}
 	content := string(data)
 	count := strings.Count(content, oldStr)
@@ -534,11 +524,6 @@ func (a *NsjailAdapter) Count() int {
 }
 
 func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv map[string]string, timeoutSecs int) *NsjailConfig {
-	// Processes run as uid 0 inside nsjail. Running as a non-root uid requires
-	// either user namespaces (blocked by Docker Desktop / most container runtimes)
-	// or setuid-via-uidmap (nsjail calls setuid before mount setup, so the child
-	// can't create dirs in the root-owned /run/user/nsjail.*.root temp tree).
-	// Security boundary is enforced by mount, PID, and network namespace isolation.
 	cfg := &NsjailConfig{
 		Mode:                ModeOnce,
 		Log:                 "/dev/null",
@@ -582,12 +567,10 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		cfg.TimeLimit = uint32(timeoutSecs)
 	}
 
-	// DisableCloneNewNet=true means "disable the clone_newnet flag" which paradoxically
-	// gives internet access (sandbox inherits pod netns instead of getting an isolated one).
+	// DisableCloneNewNet=true disables the clone_newnet flag, which grants internet access (sandbox inherits pod netns).
 	if sb.req.Network != nil {
 		net := sb.req.Network
 		if net.Enabled != nil && !*net.Enabled {
-			// leave DisableCloneNewNet = false (isolated)
 		} else if net.AllowInternetAccess {
 			cfg.DisableCloneNewNet = true
 		}
@@ -608,17 +591,11 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 	cfg.Mounts = append(cfg.Mounts,
 		MountPt{Src: sb.workspace, Dst: "/workspace", Rw: true, IsBind: true},
 		MountPt{Dst: "/tmp", Fstype: "tmpfs", Rw: true},
-		// Bind essential device files from the host. The ubuntu rootfs /dev/ is
-		// empty when used as a bind-mount pivot root; nsjail creates the
-		// destination file automatically when is_bind: true and dst is absent.
 		MountPt{Src: "/dev/null", Dst: "/dev/null", Rw: true, IsBind: true},
 		MountPt{Src: "/dev/zero", Dst: "/dev/zero", IsBind: true},
 		MountPt{Src: "/dev/urandom", Dst: "/dev/urandom", IsBind: true},
 		MountPt{Src: "/dev/random", Dst: "/dev/random", IsBind: true},
 	)
-	// When internet access is enabled the sandbox inherits the pod's network namespace,
-	// but the bare Ubuntu rootfs has empty /etc/resolv.conf and no CA bundle.
-	// Bind-mount both from the controller pod so DNS and TLS work inside the sandbox.
 	if sb.req.Network != nil && sb.req.Network.AllowInternetAccess {
 		cfg.Mounts = append(cfg.Mounts,
 			MountPt{Src: "/etc/resolv.conf", Dst: "/etc/resolv.conf", IsBind: true},
@@ -643,7 +620,6 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		}
 	}
 
-	// Each sandbox gets its own /usr/local/bin with only its allowedBinaries pre-copied in.
 	cfg.Mounts = append(cfg.Mounts, MountPt{
 		Src:    sb.binDir,
 		Dst:    "/usr/local/bin",
@@ -651,9 +627,6 @@ func (a *NsjailAdapter) buildNsjailConfig(sb *sandbox, rootfs string, execEnv ma
 		IsBind: true,
 	})
 
-	// Env vars: baseline (PATH, HOME), then sandbox-level, then per-exec overrides.
-	// HOME=/workspace is the only non-PATH baseline: many tools (npm, pip, git)
-	// fail without a writable HOME directory. Sandbox env can override it.
 	cfg.Envar = append(cfg.Envar,
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=/workspace",
@@ -723,9 +696,7 @@ func (a *NsjailAdapter) validateCreateRequest(req *api.SandboxCreateBody) error 
 	return nil
 }
 
-// resolveCommandInChroot resolves a relative command name to an absolute path by
-// walking common PATH directories inside the chroot. nsjail calls execve(2)
-// directly, so there is no automatic PATH search.
+// nsjail calls execve(2) directly with no PATH search, so relative commands must be resolved here.
 func resolveCommandInChroot(command, chroot string) string {
 	if strings.HasPrefix(command, "/") || strings.Contains(command, "/") {
 		return command

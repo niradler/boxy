@@ -14,10 +14,7 @@ import (
 	"boxy.dev/boxy/internal/api"
 )
 
-// openPTY opens a master/slave PTY pair and returns both file handles.
-// The caller is responsible for closing both. The slave must be closed in
-// the parent process after cmd.Start() so that the master reaches EOF when
-// the child exits.
+// Slave must be closed in the parent after cmd.Start() so master reaches EOF when the child exits.
 func openPTY() (master, slave *os.File, err error) {
 	master, err = os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
@@ -30,14 +27,12 @@ func openPTY() (master, slave *os.File, err error) {
 		}
 	}()
 
-	// TIOCSPTLCK(0) - unlock the slave PTY.
 	var unlock int32
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(),
 		syscall.TIOCSPTLCK, uintptr(unsafe.Pointer(&unlock))); e != 0 {
 		return nil, nil, fmt.Errorf("TIOCSPTLCK: %w", e)
 	}
 
-	// TIOCGPTN - read the slave index so we can open /dev/pts/<n>.
 	var slaveNum uint32
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(),
 		syscall.TIOCGPTN, uintptr(unsafe.Pointer(&slaveNum))); e != 0 {
@@ -52,7 +47,6 @@ func openPTY() (master, slave *os.File, err error) {
 	return master, slave, nil
 }
 
-// execPTY runs nsjailCmd with a PTY and captures merged stdout+stderr on master.
 // ctx must be the deadline context that was used to create nsjailCmd.
 func (a *NsjailAdapter) execPTY(
 	ctx context.Context,
@@ -70,7 +64,7 @@ func (a *NsjailAdapter) execPTY(
 	nsjailCmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
-		Ctty:    0, // fd 0 (slave stdin) becomes the controlling terminal
+		Ctty:    0,
 	}
 
 	if err := nsjailCmd.Start(); err != nil {
@@ -79,7 +73,6 @@ func (a *NsjailAdapter) execPTY(
 		return nil, errInternal(fmt.Sprintf("nsjail start: %v", err))
 	}
 
-	// Close slave in parent so master sees EOF when the child exits.
 	slave.Close()
 
 	var out limitWriter
@@ -96,6 +89,5 @@ func (a *NsjailAdapter) execPTY(
 	waitErr := nsjailCmd.Wait()
 	<-readDone
 
-	// PTY merges stdout+stderr; return everything in Stdout.
 	return a.buildExecResponse(waitErr, ctx, timeoutSecs, out.String(), "")
 }

@@ -11,8 +11,6 @@ import (
 	"boxy.dev/boxy/internal/api"
 )
 
-// helpers
-
 func newTestAdapter(t *testing.T) (*NsjailAdapter, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -43,14 +41,6 @@ func findMount(mounts []MountPt, dst string) (MountPt, bool) {
 	return MountPt{}, false
 }
 
-// -----------------------------------------------------------------------
-// buildNsjailConfig — mount correctness
-// These tests encode invariants that were only caught by manual testing:
-//   - resolv.conf must be injected when allowInternetAccess=true (DNS fix)
-//   - /usr/local/bin must be a single per-sandbox bind-mount, not a
-//     per-exec tmpfs (binary visibility + persistence fix)
-// -----------------------------------------------------------------------
-
 func makeSandbox(req api.SandboxCreateBody, workspace, binDir string) *sandbox {
 	return &sandbox{req: req, workspace: workspace, binDir: binDir}
 }
@@ -76,10 +66,6 @@ func TestBuildNsjailConfig_BinDirBindMount(t *testing.T) {
 }
 
 func TestBuildNsjailConfig_NoBinDirTmpfs(t *testing.T) {
-	// Regression: previous implementation mounted a per-exec tmpfs at
-	// /usr/local/bin, then bind-mounted individual allowed binaries into it.
-	// That left 0-byte mount-point artifacts in the shared rootfs, making
-	// filenames visible to sandboxes that weren't granted those binaries.
 	a, _ := newTestAdapter(t)
 	sb := makeSandbox(api.SandboxCreateBody{
 		AllowedBinaries: []string{"jq"},
@@ -97,9 +83,6 @@ func TestBuildNsjailConfig_NoBinDirTmpfs(t *testing.T) {
 }
 
 func TestBuildNsjailConfig_ResolvConfInjected(t *testing.T) {
-	// Regression: when allowInternetAccess=true the sandbox inherits the pod's
-	// network namespace but the bare Ubuntu rootfs has an empty /etc/resolv.conf.
-	// The bind-mount must be added so DNS resolution works inside the sandbox.
 	a, _ := newTestAdapter(t)
 	enabled := true
 	sb := makeSandbox(api.SandboxCreateBody{
@@ -151,8 +134,7 @@ func TestBuildNsjailConfig_NetworkIsolatedByDefault(t *testing.T) {
 	sb := makeSandbox(api.SandboxCreateBody{}, "/tmp/ws", "/tmp/bin")
 	cfg := a.buildNsjailConfig(sb, a.cfg.DefaultRootfs, nil, 0)
 
-	// DisableCloneNewNet=false → nothing emitted → nsjail uses its default clone_newnet: true
-	// → new isolated network namespace → sandbox cannot reach pod network or internet.
+	// DisableCloneNewNet=false emits nothing, so nsjail defaults to clone_newnet: true (isolated netns).
 	if cfg.DisableCloneNewNet {
 		t.Error("DisableCloneNewNet must be false by default (sandbox gets a fresh, isolated network namespace)")
 	}
@@ -165,16 +147,11 @@ func TestBuildNsjailConfig_InternetInheritsHostNetNS(t *testing.T) {
 	}, "/tmp/ws", "/tmp/bin")
 	cfg := a.buildNsjailConfig(sb, a.cfg.DefaultRootfs, nil, 0)
 
-	// DisableCloneNewNet=true → emits clone_newnet: false → sandbox inherits pod's netns
-	// → internet accessible (gated by the controller pod's NetworkPolicy).
+	// DisableCloneNewNet=true emits clone_newnet: false, so the sandbox inherits the pod netns.
 	if !cfg.DisableCloneNewNet {
 		t.Error("DisableCloneNewNet must be true when allowInternetAccess=true (sandbox inherits pod netns)")
 	}
 }
-
-// -----------------------------------------------------------------------
-// Create — binDir setup
-// -----------------------------------------------------------------------
 
 func TestCreate_BinDirCreated(t *testing.T) {
 	a, binsDir := newTestAdapter(t)
@@ -194,7 +171,6 @@ func TestCreate_BinDirCreated(t *testing.T) {
 		t.Fatal("sandbox not registered")
 	}
 
-	// binDir must exist and contain jq but not yq.
 	if _, err := os.Stat(sb.binDir); err != nil {
 		t.Fatalf("binDir does not exist: %v", err)
 	}
@@ -213,7 +189,6 @@ func TestCreate_CleanupOnBinaryFailure(t *testing.T) {
 		AllowedBinaries: []string{"nonexistent-binary-xyz"},
 	}
 	_ = a.Create(context.TODO(), req)
-	// The sandbox base dir must have been cleaned up despite the failure.
 	base := filepath.Join(a.cfg.SandboxRoot, "cleanup-test")
 	if _, err := os.Stat(base); err == nil {
 		t.Error("sandbox base directory should be removed after Create failure")
@@ -222,7 +197,6 @@ func TestCreate_CleanupOnBinaryFailure(t *testing.T) {
 
 func TestCreate_MissingBinaryFails(t *testing.T) {
 	a, _ := newTestAdapter(t)
-	// "nonexistent" is not in binsDir — Create should fail, not defer the error to Exec.
 	req := &api.SandboxCreateBody{
 		SandboxID:       "test-sb-missing",
 		AllowedBinaries: []string{"nonexistent"},
@@ -293,20 +267,14 @@ func TestDelete_NotFound(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------
-// validateCreateRequest
-// -----------------------------------------------------------------------
-
 func TestValidateCreateRequest_EmptyHostPathRejected(t *testing.T) {
 	a, _ := newTestAdapter(t)
-	// Non-tmpfs volume with empty host_path must be rejected.
 	req := &api.SandboxCreateBody{
 		Volumes: []api.VolumeMount{{GuestPath: "/data", Type: "bind", HostPath: ""}},
 	}
 	if err := a.validateCreateRequest(req); err == nil {
 		t.Error("empty host_path for non-tmpfs volume should be rejected")
 	}
-	// tmpfs volume with no host_path is fine.
 	req2 := &api.SandboxCreateBody{
 		Volumes: []api.VolumeMount{{GuestPath: "/tmp2", Type: "tmpfs"}},
 	}
@@ -472,10 +440,6 @@ func TestDelete_TeardownScriptRuns(t *testing.T) {
 		t.Fatalf("teardown script did not run: %v", err)
 	}
 }
-
-// -----------------------------------------------------------------------
-// resolveCommandInChroot
-// -----------------------------------------------------------------------
 
 func TestResolveCommandInChroot_AbsolutePassthrough(t *testing.T) {
 	for _, cmd := range []string{"/usr/bin/python3", "/bin/sh", "/usr/local/bin/jq"} {

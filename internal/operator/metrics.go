@@ -7,13 +7,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// OperatorMetrics holds the OTel instruments for the operator. A nil
-// *OperatorMetrics is valid: every method is a no-op, so reconcilers built
-// without telemetry (e.g. in tests) keep working.
-//
-// Gauges are observable and backed by atomically-updated snapshots that the
-// reconcilers refresh; the callbacks read those snapshots at scrape time
-// instead of hitting the API server.
+// A nil *OperatorMetrics is valid: every method is a no-op.
 type OperatorMetrics struct {
 	scaleUp   metric.Int64Counter
 	scaleDown metric.Int64Counter
@@ -22,7 +16,6 @@ type OperatorMetrics struct {
 	activeSandboxes atomic.Int64
 }
 
-// NewOperatorMetrics registers the operator instruments on the given meter.
 func NewOperatorMetrics(m metric.Meter) (*OperatorMetrics, error) {
 	om := &OperatorMetrics{}
 	var err error
@@ -54,8 +47,6 @@ func NewOperatorMetrics(m metric.Meter) (*OperatorMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Pool-wide active sandbox count; sandboxes-per-controller is derivable as
-	// active / ready_replicas in the query layer.
 	active, err := m.Int64ObservableGauge(
 		"boxy.operator.sandboxes.active",
 		metric.WithDescription("Active sandboxes (sessions) across the controller pool"),
@@ -73,7 +64,6 @@ func NewOperatorMetrics(m metric.Meter) (*OperatorMetrics, error) {
 	return om, nil
 }
 
-// SetPoolState refreshes the gauge snapshots from a pool reconcile.
 func (om *OperatorMetrics) SetPoolState(readyReplicas, activeSandboxes int32) {
 	if om == nil {
 		return
@@ -82,7 +72,6 @@ func (om *OperatorMetrics) SetPoolState(readyReplicas, activeSandboxes int32) {
 	om.activeSandboxes.Store(int64(activeSandboxes))
 }
 
-// ScaledUp records a successful scale-up.
 func (om *OperatorMetrics) ScaledUp(ctx context.Context) {
 	if om == nil {
 		return
@@ -90,7 +79,6 @@ func (om *OperatorMetrics) ScaledUp(ctx context.Context) {
 	om.scaleUp.Add(ctx, 1)
 }
 
-// ScaledDown records a successful scale-down.
 func (om *OperatorMetrics) ScaledDown(ctx context.Context) {
 	if om == nil {
 		return

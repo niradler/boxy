@@ -19,8 +19,6 @@ import (
 
 const conditionReady = "Ready"
 
-// ControllerPoolReconciler maintains ControllerPool.status by watching
-// ControllerPool and Session events.
 type ControllerPoolReconciler struct {
 	client.Client
 	cfg ReconcilerConfig

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,8 +16,6 @@ import (
 	"boxy.dev/boxy/internal/api"
 	"boxy.dev/boxy/internal/nsjail"
 )
-
-// Wire types match the snake_case JSON format used by internal/controller/client.go.
 
 type createSandboxReq struct {
 	SandboxID       string                    `json:"sandbox_id"`
@@ -140,10 +139,7 @@ func (s *server) handler() http.Handler {
 	return s.tokenMiddleware(mux)
 }
 
-// tokenMiddleware enforces BOXY_CONTROLLER_TOKEN on all non-healthz endpoints.
-// This is a defence-in-depth layer: even when mTLS is disabled (e.g. in dev),
-// a sandbox that shares the controller pod's network namespace cannot call the
-// controller API because the token is never exposed inside the sandbox.
+// Defence-in-depth when mTLS is off: the token is never exposed inside the sandbox.
 func (s *server) tokenMiddleware(next http.Handler) http.Handler {
 	if s.cfg.controllerToken == "" {
 		return next
@@ -372,18 +368,34 @@ func (s *server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.adapter.ReadFile(r.Context(), req.SandboxID, req.Path)
+	select {
+	case s.execSem <- struct{}{}:
+		defer func() { <-s.execSem }()
+	default:
+		s.metrics.execThrottled(r.Context())
+		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
+		return
+	}
+
+	data, truncated, err := s.adapter.ReadFile(r.Context(), req.SandboxID, req.Path)
 	if err != nil {
 		code, msg := adapterErrToHTTP(err)
 		writeErr(w, code, msg)
 		return
 	}
 
+	if truncated {
+		data = trimPartialRune(data)
+	}
 	if !utf8.Valid(data) {
 		writeErr(w, http.StatusBadRequest, "file is not valid UTF-8 text; use the bash tool for binary files")
 		return
 	}
-	writeJSON(w, http.StatusOK, fileReadResp{Path: req.Path, Content: string(data)})
+	content := string(data)
+	if truncated {
+		content += fmt.Sprintf("\n\n[boxy: output truncated at the %d-byte read limit; use the bash tool to read the full file]", s.maxOutputBytes)
+	}
+	writeJSON(w, http.StatusOK, fileReadResp{Path: req.Path, Content: content})
 }
 
 func (s *server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
@@ -398,6 +410,15 @@ func (s *server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Path) == "" {
 		writeErr(w, http.StatusBadRequest, "path required")
+		return
+	}
+
+	select {
+	case s.execSem <- struct{}{}:
+		defer func() { <-s.execSem }()
+	default:
+		s.metrics.execThrottled(r.Context())
+		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
 		return
 	}
 
@@ -444,6 +465,15 @@ func (s *server) handleFileEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	select {
+	case s.execSem <- struct{}{}:
+		defer func() { <-s.execSem }()
+	default:
+		s.metrics.execThrottled(r.Context())
+		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
+		return
+	}
+
 	n, err := s.adapter.EditFile(r.Context(), req.SandboxID, req.Path, req.OldString, req.NewString, req.ReplaceAll)
 	if err != nil {
 		code, msg := adapterErrToHTTP(err)
@@ -451,6 +481,16 @@ func (s *server) handleFileEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, fileEditResp{Path: req.Path, Replacements: n})
+}
+
+func trimPartialRune(b []byte) []byte {
+	for i := 0; i < utf8.UTFMax-1 && len(b) > 0; i++ {
+		if utf8.Valid(b) {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 func (s *server) truncateOutput(out string) string {

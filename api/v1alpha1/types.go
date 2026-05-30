@@ -6,7 +6,6 @@ import (
 	"boxy.dev/boxy/internal/api"
 )
 
-// SandboxPhase represents the lifecycle state of a sandbox.
 type SandboxPhase string
 
 const (
@@ -31,7 +30,6 @@ type Sandbox struct {
 
 // +kubebuilder:object:root=true
 
-// SandboxList contains a list of Sandbox resources.
 type SandboxList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -58,8 +56,6 @@ const (
 	FinalizerSandboxConfigCleanup = "boxy.dev/sandbox-config-cleanup"
 	LabelSandboxID                = "boxy.dev/sandbox-id"
 )
-
-// Session CR types
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

@@ -29,7 +29,7 @@ import (
 
 type Config struct {
 	ListenAddr       string
-	DevToken         string // optional static bypass for local dev / e2e; empty = K8s SA tokens only
+	DevToken         string
 	AuthCacheTTL     time.Duration
 	SandboxNamespace string
 	MaxBodyBytes     int
@@ -97,7 +97,7 @@ func ConfigFromEnv() (*Config, error) {
 	cacheTTL := time.Duration(envInt("BOXY_AUTH_CACHE_TTL_SECONDS", 30)) * time.Second
 	cfg := &Config{
 		ListenAddr:        strings.TrimSpace(os.Getenv("BOXY_LISTEN_ADDR")),
-		DevToken:          strings.TrimSpace(os.Getenv("BOXY_ROUTER_TOKEN")), // optional static bypass
+		DevToken:          strings.TrimSpace(os.Getenv("BOXY_ROUTER_TOKEN")),
 		AuthCacheTTL:      cacheTTL,
 		SandboxNamespace:  ns,
 		MaxBodyBytes:      envInt("BOXY_MAX_BODY_BYTES", 6<<20),
@@ -435,7 +435,6 @@ func (s *Server) createSandboxFromBody(ctx context.Context, body *api.SandboxCre
 	return &api.SandboxConfigResponse{SandboxID: body.SandboxID, TTLSeconds: body.TTLSeconds}, nil
 }
 
-// EnsureDefaultSandbox creates the default sandbox CR if it doesn't exist.
 func (s *Server) EnsureDefaultSandbox(ctx context.Context) error {
 	if !s.cfg.DefaultSandboxEnabled || s.cfg.DefaultSandboxConfig == nil {
 		return nil

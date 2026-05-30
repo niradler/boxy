@@ -11,9 +11,6 @@ import (
 // +kubebuilder:printcolumn:name="Active",type=integer,JSONPath=".status.activeSandboxCount"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// ControllerPool represents the fleet of boxy-controller pods (a single StatefulSet).
-// One ControllerPool exists per StatefulSet deployment. Sandbox CRs reference the pool
-// via status.controllerPool.
 type ControllerPool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -24,7 +21,6 @@ type ControllerPool struct {
 
 // +kubebuilder:object:root=true
 
-// ControllerPoolList contains a list of ControllerPool resources.
 type ControllerPoolList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

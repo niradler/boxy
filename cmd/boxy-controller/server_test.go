@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-// TestTokenMiddleware verifies that the controller API rejects requests without
-// the correct X-Boxy-Controller-Token header when a token is configured.
-// Regression: with BOXY_MTLS_DISABLED=true and no token, an internet-enabled
-// sandbox sharing the controller pod's network namespace could exec in other
-// sandboxes unauthenticated.
 func TestTokenMiddleware_RejectsWithoutToken(t *testing.T) {
 	s := &server{cfg: &config{controllerToken: "secret"}}
 
@@ -85,7 +80,6 @@ func TestTokenMiddleware_HealthzBypassesToken(t *testing.T) {
 	handler := s.tokenMiddleware(inner)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	// No token header - healthz must still pass through.
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

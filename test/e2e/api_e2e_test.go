@@ -249,6 +249,7 @@ func TestMCPFileTools(t *testing.T) {
 	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
 		SandboxID:  sandboxID,
 		TTLSeconds: 600,
+		VM:         &api.VMConfig{Rlimits: []api.VMRlimit{{Resource: "fsize", Soft: 16}}},
 	})
 
 	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
@@ -350,11 +351,20 @@ func TestMCPFileTools(t *testing.T) {
 		t.Fatalf("binary file size via bash = %q, want 5", got)
 	}
 	expectToolError(11, "read_file", map[string]any{"path": "/workspace/blob.bin"})
+
+	if got := mcpText(12, "bash", map[string]any{
+		"command": "head -c 7000000 /dev/zero | tr '\\0' 'a' > /workspace/big.txt && wc -c < /workspace/big.txt",
+	}); strings.TrimSpace(got) != "7000000" {
+		t.Fatalf("big file setup via bash = %q, want 7000000", got)
+	}
+	if got := mcpText(13, "read_file", map[string]any{"path": "/workspace/big.txt"}); !strings.Contains(got, "output truncated") || !strings.Contains(got, "bash tool") {
+		t.Fatalf("read_file of oversized file missing truncation notice (len=%d, tail=%q)", len(got), got[max(0, len(got)-120):])
+	}
+	expectToolError(14, "edit_file", map[string]any{
+		"path": "/workspace/big.txt", "oldString": "aaaa", "newString": "bbbb", "replaceAll": true,
+	})
 }
 
-// TestMCPCrossSandboxIsolation verifies that the MCP bash tool cannot read
-// files written in a different sandbox's session, even when both sandboxes
-// are accessible with the same auth token.
 func TestMCPCrossSandboxIsolation(t *testing.T) {
 	base, tok := testCreds(t)
 
@@ -436,7 +446,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 		t.Fatalf("cross-sandbox isolation FAILED: sandbox B read sandbox A's file, got %q", got)
 	}
 
-	// Invalid session ID must return a tool-level error (not HTTP 500).
 	noSuchResp := postMCP(t, base, tok, jsonRPCRequest{
 		Jsonrpc: "2.0", ID: 3, Method: "tools/call",
 		Params: map[string]any{
@@ -456,8 +465,6 @@ func TestMCPCrossSandboxIsolation(t *testing.T) {
 	}
 }
 
-// TestExecTimedOut verifies that timedOut=true and exitCode=137 are returned
-// when a command exceeds its configured timeout.
 func TestExecTimedOut(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -468,7 +475,6 @@ func TestExecTimedOut(t *testing.T) {
 		TTLSeconds: 120,
 	})
 
-	// First exec auto-creates the session.
 	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		Command:        "echo",
@@ -499,8 +505,6 @@ func TestExecTimedOut(t *testing.T) {
 	}
 }
 
-// TestInternetAccessDNS verifies that a sandbox with allowInternetAccess=true
-// has a populated /etc/resolv.conf and can resolve hostnames.
 func TestInternetAccessDNS(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -512,7 +516,6 @@ func TestInternetAccessDNS(t *testing.T) {
 		Network:    &api.SandboxNetworkConfig{AllowInternetAccess: true},
 	})
 
-	// First exec auto-creates the session.
 	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		Command:        "echo",
@@ -528,7 +531,6 @@ func TestInternetAccessDNS(t *testing.T) {
 
 	waitSessionReady(t, base, tok, sessionID)
 
-	// /etc/resolv.conf must have nameserver entries - validates the resolv.conf bind-mount.
 	resolvOut := postExec(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		SessionID:      sessionID,
@@ -540,8 +542,6 @@ func TestInternetAccessDNS(t *testing.T) {
 		t.Fatalf("/etc/resolv.conf has no nameserver entries - resolv.conf bind-mount not applied (stderr=%q)", resolvOut.Stderr)
 	}
 
-	// DNS resolution requires controller.networkPolicy.allowInternetEgress=true.
-	// Skip gracefully if egress is blocked at the network layer.
 	dnsOut := postExec(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		SessionID:      sessionID,
@@ -558,8 +558,6 @@ func TestInternetAccessDNS(t *testing.T) {
 	}
 }
 
-// postExecRaw posts to /v1/sessions/exec and returns the raw response.
-// Caller must close the body.
 func postExecRaw(t *testing.T, base, tok string, body api.ExecRequestBody) *http.Response {
 	t.Helper()
 	payload, _ := json.Marshal(body)
@@ -848,7 +846,6 @@ func TestTeardownScript_Runs(t *testing.T) {
 	t.Fatal("teardown script did not run within 15s of session deletion")
 }
 
-// streamEvent is a single NDJSON line from POST /v1/sessions/exec/stream.
 type streamEvent struct {
 	Type     string `json:"type"`
 	Data     string `json:"data"`
@@ -888,8 +885,6 @@ func postExecStream(t *testing.T, base, tok string, body api.ExecRequestBody) []
 	return events
 }
 
-// TestExecStream verifies that POST /v1/sessions/exec/stream delivers stdout
-// chunks as NDJSON events and ends with a zero-exit event.
 func TestExecStream(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -932,8 +927,6 @@ func TestExecStream(t *testing.T) {
 	}
 }
 
-// TestExecStreamTruncated verifies that the truncated event fires when output
-// exceeds BOXY_MAX_OUTPUT_BYTES and the exit event still follows.
 func TestExecStreamTruncated(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -946,7 +939,6 @@ func TestExecStreamTruncated(t *testing.T) {
 
 	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
 
-	// Generate ~7 MB of output, which should exceed the default 6 MB cap.
 	events := postExecStream(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		SessionID:      sessionID,
@@ -973,9 +965,6 @@ func TestExecStreamTruncated(t *testing.T) {
 	}
 }
 
-// TestExecPTY verifies that exec with pty:true returns merged output in Stdout
-// without crashing, and that basic terminal-awareness signals are present
-// (the TERM variable should be set by the PTY session).
 func TestExecPTY(t *testing.T) {
 	base, tok := testCreds(t)
 	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -1017,7 +1006,6 @@ func TestExec_WorkspaceAndBinary(t *testing.T) {
 
 	sessionID := createSessionForSandbox(t, base, tok, sandboxID)
 
-	// Write a file to /workspace and read it back.
 	writeOut := postExec(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		SessionID:      sessionID,
@@ -1030,7 +1018,6 @@ func TestExec_WorkspaceAndBinary(t *testing.T) {
 			writeOut.ExitCode, writeOut.Stdout, writeOut.Stderr)
 	}
 
-	// Execute a binary from the system path.
 	binOut := postExec(t, base, tok, api.ExecRequestBody{
 		SandboxID:      sandboxID,
 		SessionID:      sessionID,

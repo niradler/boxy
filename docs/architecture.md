@@ -274,6 +274,9 @@ type Adapter interface {
     Create(ctx context.Context, req *api.SandboxCreateBody) error
     Exec(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, pty bool) (*api.ExecResponseBody, error)
     ExecStream(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, onEvent func(string, string)) (*api.ExecResponseBody, error)
+    ReadFile(ctx context.Context, sandboxID, path string) (data []byte, truncated bool, err error)
+    WriteFile(ctx context.Context, sandboxID, path, content string) (int, error)
+    EditFile(ctx context.Context, sandboxID, path, oldStr, newStr string, replaceAll bool) (int, error)
     Delete(ctx context.Context, sandboxID string) error
     ListIDs() []string
     Count() int

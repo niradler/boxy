@@ -9,9 +9,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// routerMetrics holds the OTel instruments for the router edge. A nil
-// *routerMetrics is valid: every method is a no-op, which is what tests that
-// build a Server directly (without telemetry) rely on.
+// A nil *routerMetrics is valid: every method is a no-op.
 type routerMetrics struct {
 	requests metric.Int64Counter
 	duration metric.Float64Histogram
@@ -33,6 +31,7 @@ func newRouterMetrics(m metric.Meter, maxConcurrency int) (*routerMetrics, error
 		"boxy.router.request.duration",
 		metric.WithDescription("Router HTTP request duration"),
 		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300),
 	); err != nil {
 		return nil, err
 	}
@@ -61,7 +60,6 @@ func newRouterMetrics(m metric.Meter, maxConcurrency int) (*routerMetrics, error
 	return rm, nil
 }
 
-// statusRecorder captures the response status code for metrics.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int
@@ -84,15 +82,12 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 	return sr.ResponseWriter.Write(b)
 }
 
-// Flush forwards flushes so streaming/NDJSON handlers keep working through the wrapper.
 func (sr *statusRecorder) Flush() {
 	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// middleware records request count, duration, and in-flight gauge per request.
-// Safe to use on a nil *routerMetrics (acts as a pass-through).
 func (rm *routerMetrics) middleware(next http.Handler) http.Handler {
 	if rm == nil {
 		return next
@@ -105,9 +100,6 @@ func (rm *routerMetrics) middleware(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(sr, r)
 
-		// r.Pattern is set by ServeMux during matching (Go 1.23+); it is the
-		// templated route, which keeps label cardinality bounded. Unmatched
-		// requests get "other".
 		route := r.Pattern
 		if route == "" {
 			route = "other"

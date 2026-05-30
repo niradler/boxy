@@ -35,7 +35,6 @@ func TestMetricsEndpointBypassesToken(t *testing.T) {
 	s := &server{cfg: &config{controllerToken: "secret"}, metricsHandler: stub}
 	h := s.handler()
 
-	// No token header: /metrics must still be reachable, like /healthz.
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -49,8 +48,6 @@ func TestMetricsEndpointBypassesToken(t *testing.T) {
 }
 
 func TestNilMetricsAreNoOp(t *testing.T) {
-	// A server built without metrics (as the other tests do) must not panic when
-	// the recording helpers are called.
 	var cm *controllerMetrics
 	cm.sandboxCreated(t.Context())
 	cm.sandboxDeleted(t.Context())

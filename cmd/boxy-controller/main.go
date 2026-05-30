@@ -101,9 +101,7 @@ func main() {
 		httpSrv.TLSConfig = tlsCfg
 	}
 
-	// Metrics are served on a dedicated plaintext port so Prometheus can scrape
-	// them without the mTLS client cert the main API listener requires. The main
-	// mux also exposes /metrics (useful when mTLS is disabled in dev).
+	// Dedicated plaintext metrics port so Prometheus can scrape without the main listener's mTLS client cert.
 	var metricsSrv *http.Server
 	if cfg.metricsPort > 0 && cfg.metricsPort != cfg.port {
 		mmux := http.NewServeMux()

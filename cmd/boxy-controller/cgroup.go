@@ -10,20 +10,12 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// cgroup v2 unified-hierarchy files, as seen from inside the container's own
-// cgroup namespace (the controller pod's cgroup root).
 const (
 	cgroupMemCurrentPath = "/sys/fs/cgroup/memory.current"
 	cgroupCPUStatPath    = "/sys/fs/cgroup/cpu.stat"
 )
 
-// registerPodResourceGauges wires observable instruments that read the
-// controller pod's own cgroup at scrape time. These are pod-level (no
-// sandbox_id): per-jail cpu/mem is not available because each exec is an
-// ephemeral nsjail process with no stable per-sandbox cgroup (see
-// .claude/docs/agent-sandbox-adoption.md, FOCUS #3). On platforms without
-// cgroup v2 (dev/Windows) the files are absent and the callbacks observe
-// nothing.
+// Pod-level only: ephemeral nsjail execs have no stable per-sandbox cgroup; absent on non-cgroup-v2 hosts.
 func registerPodResourceGauges(m metric.Meter) error {
 	memGauge, err := m.Int64ObservableGauge(
 		"boxy.controller.pod.memory.usage",
@@ -54,7 +46,6 @@ func registerPodResourceGauges(m metric.Meter) error {
 	return err
 }
 
-// readCgroupMemoryBytes reads memory.current. Returns false if unavailable.
 func readCgroupMemoryBytes() (uint64, bool) {
 	data, err := os.ReadFile(cgroupMemCurrentPath)
 	if err != nil {
@@ -67,7 +58,6 @@ func readCgroupMemoryBytes() (uint64, bool) {
 	return n, true
 }
 
-// readCgroupCPUSeconds reads usage_usec from cpu.stat and converts to seconds.
 func readCgroupCPUSeconds() (float64, bool) {
 	f, err := os.Open(cgroupCPUStatPath)
 	if err != nil {

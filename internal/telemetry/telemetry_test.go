@@ -58,7 +58,6 @@ func TestDisabledSDKIsNoOp(t *testing.T) {
 	}
 	defer func() { _ = p.Shutdown(context.Background()) }()
 
-	// Meter must be usable (no-op) and /metrics must still answer 200.
 	ctr, err := p.Meter("test").Int64Counter("boxy.test.widgets")
 	if err != nil {
 		t.Fatalf("counter: %v", err)

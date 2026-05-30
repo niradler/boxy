@@ -404,8 +404,6 @@ func (r *SessionReconciler) assignController(ctx context.Context) (podName, addr
 }
 
 func (r *SessionReconciler) scaleUp(ctx context.Context) error {
-	// adjustFn always returns current+1 here (or errors at max), so a nil result
-	// means a real scale-up occurred.
 	if err := r.scaleStatefulSet(ctx, func(current int32) (int32, error) {
 		if current >= r.cfg.MaxControllerReplicas {
 			return 0, fmt.Errorf("already at max controller replicas (%d)", r.cfg.MaxControllerReplicas)

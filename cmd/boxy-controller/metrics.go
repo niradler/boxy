@@ -8,7 +8,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// execResult maps an exec response to the "result" metric attribute value.
 func execResult(r *api.ExecResponseBody) string {
 	switch {
 	case r == nil:
@@ -22,15 +21,7 @@ func execResult(r *api.ExecResponseBody) string {
 	}
 }
 
-// controllerMetrics holds the OTel instruments for the controller. All
-// instruments come from a single meter; when telemetry is disabled the meter is
-// a no-op and every Add/Record is a cheap no-op too.
-//
-// NOTE on cardinality: exec counters/histograms carry a sandbox_id attribute as
-// specified by the metrics design. sandbox_id is unbounded over the lifetime of
-// a controller, so this can grow the Prometheus series count. If that becomes a
-// problem, drop sandbox_id here (the active-sandbox gauge still gives the live
-// count) or relabel it away at scrape time.
+// Exec instruments carry an unbounded sandbox_id attribute; watch Prometheus series cardinality.
 type controllerMetrics struct {
 	sandboxesActive metric.Int64UpDownCounter
 	execTotal       metric.Int64Counter
@@ -61,8 +52,7 @@ func newControllerMetrics(m metric.Meter) (*controllerMetrics, error) {
 		"boxy.controller.exec.duration",
 		metric.WithDescription("Exec wall-clock duration"),
 		metric.WithUnit("s"),
-		// Seconds-scale boundaries; the SDK default (5..10000) is built for
-		// millisecond values and collapses every real exec into one bucket.
+		// Seconds-scale buckets; the SDK default is millisecond-scale and collapses every exec into one bucket.
 		metric.WithExplicitBucketBoundaries(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300),
 	); err != nil {
 		return nil, err
@@ -88,7 +78,6 @@ func newControllerMetrics(m metric.Meter) (*controllerMetrics, error) {
 	return cm, nil
 }
 
-// recordExec records the outcome of one admitted exec.
 func (cm *controllerMetrics) recordExec(ctx context.Context, sandboxID, result string, durationSeconds float64, outputBytes int) {
 	if cm == nil {
 		return

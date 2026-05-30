@@ -36,9 +36,7 @@ func main() {
 	headlessSvc := envStr("BOXY_CONTROLLER_HEADLESS_SERVICE", stsName+"-headless")
 	metricsAddr := envStr("BOXY_METRICS_ADDR", ":8080")
 
-	// Register the OTel Prometheus exporter on controller-runtime's shared
-	// registry so the manager's metrics server exposes both controller-runtime's
-	// metrics and ours on one /metrics endpoint.
+	// Use controller-runtime's registry so its metrics and ours share one /metrics endpoint.
 	tp, err := telemetry.Init(context.Background(), telemetry.Options{
 		ServiceName: "boxy-operator",
 		Registerer:  crmetrics.Registry,
