@@ -20,12 +20,11 @@ type cachedResult struct {
 	storedAt time.Time
 }
 
-// tokenReviewer validates SA bearer tokens via TokenReview, caching results.
-// The raw token is never stored - only its SHA-256 fingerprint is used as the cache key.
+// The raw token is never stored; only its SHA-256 fingerprint is the cache key.
 type tokenReviewer struct {
 	cs       kubernetes.Interface
 	ttl      time.Duration
-	devToken string // optional static bypass for local dev / e2e
+	devToken string
 
 	mu      sync.RWMutex
 	entries map[string]*cachedResult
@@ -144,7 +143,6 @@ func (s *Server) canResourceAccess(ctx context.Context, verb, resource, name str
 	return s.auth.authorizeResource(ctx, user, s.cfg.SandboxNamespace, verb, resource, name)
 }
 
-// evictLoop removes stale entries; exits when ctx is cancelled.
 func (tr *tokenReviewer) evictLoop(ctx context.Context) {
 	tick := time.NewTicker(tr.ttl * 2)
 	defer tick.Stop()
@@ -164,7 +162,6 @@ func (tr *tokenReviewer) evictLoop(ctx context.Context) {
 	}
 }
 
-// The raw token is never retained in memory beyond this call.
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])

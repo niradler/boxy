@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"strconv"
@@ -14,10 +15,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	boxyv1 "boxy.dev/boxy/api/v1alpha1"
 	ctrlclient "boxy.dev/boxy/internal/controller"
 	"boxy.dev/boxy/internal/operator"
+	"boxy.dev/boxy/internal/telemetry"
 )
 
 func main() {
@@ -30,6 +34,28 @@ func main() {
 	ns := envStr("BOXY_NAMESPACE", "default")
 	stsName := envStr("BOXY_CONTROLLER_STATEFULSET_NAME", "boxy-ctrl")
 	headlessSvc := envStr("BOXY_CONTROLLER_HEADLESS_SERVICE", stsName+"-headless")
+	metricsAddr := envStr("BOXY_METRICS_ADDR", ":8080")
+
+	// Use controller-runtime's registry so its metrics and ours share one /metrics endpoint.
+	tp, err := telemetry.Init(context.Background(), telemetry.Options{
+		ServiceName: "boxy-operator",
+		Registerer:  crmetrics.Registry,
+	})
+	if err != nil {
+		slog.Error("telemetry init", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), telemetry.ShutdownTimeout)
+		defer cancel()
+		_ = tp.Shutdown(shutdownCtx)
+	}()
+
+	opMetrics, err := operator.NewOperatorMetrics(tp.Meter("boxy.dev/boxy/operator"))
+	if err != nil {
+		slog.Error("operator metrics", "err", err)
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
@@ -37,6 +63,7 @@ func main() {
 		LeaderElectionID:        "boxy-operator-leader",
 		LeaderElectionNamespace: ns,
 		HealthProbeBindAddress:  ":8081",
+		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{ns: {}},
 		},
@@ -68,6 +95,7 @@ func main() {
 		TerminatedRetentionSec: envInt("BOXY_TERMINATED_RETENTION_SECONDS", 3600),
 		ScaleDownCooldown:      time.Duration(envInt("BOXY_SCALE_DOWN_COOLDOWN_SECONDS", 300)) * time.Second,
 		MTLSDisabled:           envBool("BOXY_MTLS_DISABLED", false),
+		Metrics:                opMetrics,
 	}
 
 	sessionReconciler := operator.NewSessionReconciler(mgr.GetClient(), cc, cfg)

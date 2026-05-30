@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"boxy.dev/boxy/internal/router"
+	"boxy.dev/boxy/internal/telemetry"
 )
 
 func main() {
@@ -42,6 +43,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	tp, err := telemetry.Init(ctx, telemetry.Options{ServiceName: "boxy-router"})
+	if err != nil {
+		slog.Error("telemetry init", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), telemetry.ShutdownTimeout)
+		defer cancel()
+		_ = tp.Shutdown(shutdownCtx)
+	}()
+
 	go func() {
 		if err := k8sCache.Start(ctx); err != nil {
 			slog.Error("cache start failed", "err", err)
@@ -55,7 +67,7 @@ func main() {
 	}
 	slog.Info("informer cache synced")
 
-	srv := router.NewServer(ctx, *cfg, k8sClient, k8sCache, cs)
+	srv := router.NewServer(ctx, *cfg, k8sClient, k8sCache, cs, tp)
 	mux := srv.Handler()
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,

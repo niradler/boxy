@@ -94,6 +94,7 @@ spec:
                   "patches"         .Values.router.defaultSandbox.patches
                 | toJson | quote }}
             {{- end }}
+            {{- include "boxy.otelEnv" . | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /healthz

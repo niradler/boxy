@@ -19,8 +19,6 @@ import (
 
 const conditionReady = "Ready"
 
-// ControllerPoolReconciler maintains ControllerPool.status by watching
-// ControllerPool and Session events.
 type ControllerPoolReconciler struct {
 	client.Client
 	cfg ReconcilerConfig
@@ -67,6 +65,7 @@ func (r *ControllerPoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	pool.Status.ActiveSandboxCount = active
 	pool.Status.ReadyReplicas = readyReplicas
+	r.cfg.Metrics.SetPoolState(readyReplicas, active)
 	r.setReadyCondition(&pool, readyReplicas)
 
 	if err := r.Status().Update(ctx, &pool); err != nil {

@@ -1,0 +1,82 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- /*
+  Prometheus Operator ServiceMonitors for the three boxy components. All scrape
+  GET /metrics. The operator needs a dedicated Service (its pod has no Service
+  otherwise); router and controller reuse their existing Services.
+  Requires the monitoring.coreos.com/v1 CRDs.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "boxy.fullname" . }}-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: boxy-operator
+    boxy.dev/metrics: "true"
+spec:
+  selector:
+    app: boxy-operator
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.operatorMetricsPort }}
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "boxy.fullname" . }}-router
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml .Values.metrics.serviceMonitor.labels | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  selector:
+    matchLabels:
+      app: boxy-router
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "boxy.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml .Values.metrics.serviceMonitor.labels | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ include "boxy.sandboxNamespace" . }}]
+  selector:
+    matchLabels:
+      app: boxy-controller
+  endpoints:
+    # Plaintext metrics port (controller.metricsPort), outside the mTLS API listener.
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "boxy.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- toYaml .Values.metrics.serviceMonitor.labels | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  selector:
+    matchLabels:
+      boxy.dev/metrics: "true"
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}

@@ -120,6 +120,30 @@ func ValidateSessionCreate(b *SessionCreateBody) error {
 	return nil
 }
 
+const maxFilePathLen = 4096
+
+func ValidateFilePath(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return fmt.Errorf("path is required")
+	}
+	if len(p) > maxFilePathLen {
+		return fmt.Errorf("path too long: max %d characters", maxFilePathLen)
+	}
+	if strings.ContainsRune(p, 0) {
+		return fmt.Errorf("path must not contain NUL")
+	}
+	return nil
+}
+
+func ValidateFileEncoding(enc string) error {
+	switch strings.ToLower(strings.TrimSpace(enc)) {
+	case "", "utf-8", "utf8", "base64":
+		return nil
+	}
+	return fmt.Errorf("encoding must be 'utf-8' or 'base64'")
+}
+
 func ValidateSandboxID(id string) error {
 	return validateLabelBackedName("sandboxId", id)
 }

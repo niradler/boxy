@@ -217,8 +217,18 @@ func TestMCP_ToolsList(t *testing.T) {
 		} `json:"tools"`
 	}
 	_ = json.Unmarshal(resp.Result, &result)
-	if len(result.Tools) != 1 || result.Tools[0].Name != "bash" {
-		t.Fatalf("unexpected tools: %s", resp.Result)
+
+	got := make(map[string]bool)
+	for _, tool := range result.Tools {
+		got[tool.Name] = true
+	}
+	for _, want := range []string{"bash", "read_file", "write_file", "edit_file"} {
+		if !got[want] {
+			t.Fatalf("missing tool %q in: %s", want, resp.Result)
+		}
+	}
+	if len(result.Tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d: %s", len(result.Tools), resp.Result)
 	}
 }
 
@@ -254,6 +264,118 @@ func TestMCP_ToolsCall_BashSuccess(t *testing.T) {
 	}
 	if len(tr.Content) == 0 || tr.Content[0].Text != "hello" {
 		t.Fatalf("unexpected content: %+v", tr.Content)
+	}
+}
+
+func TestMCP_ToolsCall_FileTools(t *testing.T) {
+	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/files/write":
+			_ = json.NewEncoder(w).Encode(map[string]any{"path": "/workspace/a.txt", "bytes_written": 5})
+		case "/v1/files/read":
+			_ = json.NewEncoder(w).Encode(map[string]any{"path": "/workspace/a.txt", "content": "hello", "encoding": "utf-8", "size": 5})
+		case "/v1/files/edit":
+			_ = json.NewEncoder(w).Encode(map[string]any{"path": "/workspace/a.txt", "replacements": 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ctrl.Close()
+	u, _ := url.Parse(ctrl.URL)
+	port, _ := strconv.Atoi(u.Port())
+	sess := testSession("sess-1", "sess-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sess})
+	handler := srv.Handler()
+
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"write_file", map[string]any{"path": "/workspace/a.txt", "content": "hello"}, "wrote 5 bytes to /workspace/a.txt"},
+		{"read_file", map[string]any{"path": "/workspace/a.txt"}, "hello"},
+		{"edit_file", map[string]any{"path": "/workspace/a.txt", "oldString": "hello", "newString": "world"}, "made 1 replacement(s) in /workspace/a.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, resp := mcpPost(t, handler, "tools/call", map[string]any{
+				"name":      tc.name,
+				"arguments": tc.args,
+			}, mcpHeaders{sessionID: "sess-1"})
+			if code != http.StatusOK {
+				t.Fatalf("HTTP %d", code)
+			}
+			if resp.Error != nil {
+				t.Fatalf("unexpected rpc error: %+v", resp.Error)
+			}
+			tr := parseToolResult(t, resp.Result)
+			if tr.IsError {
+				t.Fatalf("tool returned error: %v", tr.Content)
+			}
+			if len(tr.Content) == 0 || tr.Content[0].Text != tc.want {
+				t.Fatalf("got %+v, want %q", tr.Content, tc.want)
+			}
+		})
+	}
+}
+
+func TestMCP_ToolsCall_FileErrorMessageSurfaced(t *testing.T) {
+	const ctrlMsg = "oldString is not unique (2 matches); add context or set replaceAll"
+	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/files/edit" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.ErrorBody{Error: ctrlMsg})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ctrl.Close()
+	u, _ := url.Parse(ctrl.URL)
+	port, _ := strconv.Atoi(u.Port())
+	sess := testSession("sess-1", "sess-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sess})
+	handler := srv.Handler()
+
+	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
+		"name":      "edit_file",
+		"arguments": map[string]any{"path": "/workspace/a.txt", "oldString": "x", "newString": "y"},
+	}, mcpHeaders{sessionID: "sess-1"})
+	if code != http.StatusOK {
+		t.Fatalf("HTTP %d", code)
+	}
+	tr := parseToolResult(t, resp.Result)
+	if !tr.IsError {
+		t.Fatal("expected tool-level error")
+	}
+	if len(tr.Content) == 0 || !bytes.Contains([]byte(tr.Content[0].Text), []byte(ctrlMsg)) {
+		t.Fatalf("controller error message not surfaced; got %+v", tr.Content)
+	}
+}
+
+func TestMCP_ToolsCall_FileEmptyPathRejected(t *testing.T) {
+	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("controller should not be called for an invalid path: %s", r.URL.Path)
+	}))
+	defer ctrl.Close()
+	u, _ := url.Parse(ctrl.URL)
+	port, _ := strconv.Atoi(u.Port())
+	sess := testSession("sess-1", "sess-1", "sb-1", u.Hostname(), int32(port), boxyv1.SandboxPhaseRunning)
+
+	srv := newTestServer(t, ctrl.URL, []runtime.Object{sess})
+	handler := srv.Handler()
+
+	code, resp := mcpPost(t, handler, "tools/call", map[string]any{
+		"name":      "read_file",
+		"arguments": map[string]any{"path": "   "},
+	}, mcpHeaders{sessionID: "sess-1"})
+	if code != http.StatusOK {
+		t.Fatalf("HTTP %d", code)
+	}
+	tr := parseToolResult(t, resp.Result)
+	if !tr.IsError {
+		t.Fatal("expected tool-level error for empty path")
 	}
 }
 

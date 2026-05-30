@@ -69,7 +69,7 @@ func protoString(s string) string {
 			b.WriteString(`\n`)
 		case c == '\r':
 			b.WriteString(`\r`)
-		case c < 0x20 || c == 0x7F: // NUL and all other ASCII control chars
+		case c < 0x20 || c == 0x7F:
 			fmt.Fprintf(&b, `\%03o`, c)
 		default:
 			b.WriteByte(c)
@@ -100,8 +100,7 @@ func (c NsjailConfig) ToTextProto() string {
 	if c.TimeLimit > 0 {
 		fmt.Fprintf(&b, "time_limit: %d\n", c.TimeLimit)
 	}
-	// clone_newuser/clone_newnet default to true in nsjail's proto.
-	// Emit false only when explicitly disabled.
+	// clone_newuser/clone_newnet default to true in nsjail's proto; emit false only when explicitly disabled.
 	if c.DisableCloneNewUser {
 		b.WriteString("clone_newuser: false\n")
 	}
@@ -143,8 +142,7 @@ func (c NsjailConfig) ToTextProto() string {
 	for _, e := range c.Envar {
 		fmt.Fprintf(&b, "envar: %s\n", protoString(e))
 	}
-	// Rootfs bind mount must be first so nsjail pivots into it before
-	// applying subsequent mounts (workspace, tmpfs, volumes).
+	// Rootfs bind mount must be first so nsjail pivots into it before subsequent mounts.
 	if c.Chroot != "" {
 		b.WriteString("mount {\n")
 		fmt.Fprintf(&b, "  src: %s\n", protoString(c.Chroot))

@@ -84,6 +84,9 @@ controller:
     digest: ""
 
   port: 8080
+  # Dedicated plaintext port for Prometheus /metrics, outside the mTLS API
+  # listener (which requires client certs). Set 0 to disable.
+  metricsPort: 9090
   replicas: 1
   maxSandboxes: 20
   maxExecConcurrency: 50   # max parallel exec calls a single controller pod handles
@@ -126,6 +129,34 @@ operator:
   terminatedRetentionSeconds: 3600
   maxControllerReplicas: 50
   minControllerReplicas: 1
+
+# --- Metrics / OpenTelemetry ---
+# Each binary always serves Prometheus metrics at GET /metrics (router: router
+# Service port; controller: controller port; operator: metricsPort below).
+metrics:
+  # Disable the OpenTelemetry SDK entirely in all binaries (sets OTEL_SDK_DISABLED=true).
+  # /metrics still answers 200 with an empty body so scrapers do not error.
+  disabled: false
+
+  # Optional OTLP/gRPC push endpoint (e.g. "otel-collector:4317"). When set, each
+  # binary also pushes metrics via OTLP in addition to serving Prometheus /metrics.
+  # Empty = Prometheus pull only.
+  otlpEndpoint: ""
+  # Set true when the OTLP endpoint is plaintext gRPC (no TLS).
+  otlpInsecure: false
+
+  # Port the operator serves /metrics on (controller-runtime metrics server).
+  operatorMetricsPort: 8080
+
+  # Prometheus Operator ServiceMonitor objects. Requires the
+  # monitoring.coreos.com/v1 CRDs to be installed in the cluster.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels so the Prometheus Operator's serviceMonitorSelector picks these up
+    # (e.g. {release: kube-prometheus-stack}).
+    labels: {}
 
 # --- mTLS (router/operator ↔ controller) ---
 mtls:

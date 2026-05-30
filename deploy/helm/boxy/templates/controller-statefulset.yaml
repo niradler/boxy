@@ -32,9 +32,15 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.controller.port }}
+            {{- if .Values.controller.metricsPort }}
+            - name: metrics
+              containerPort: {{ .Values.controller.metricsPort }}
+            {{- end }}
           env:
             - name: BOXY_CONTROLLER_PORT
               value: {{ .Values.controller.port | quote }}
+            - name: BOXY_METRICS_PORT
+              value: {{ .Values.controller.metricsPort | default 0 | quote }}
             - name: BOXY_MAX_SANDBOXES
               value: {{ .Values.controller.maxSandboxes | quote }}
             - name: BOXY_MAX_EXEC_CONCURRENCY
@@ -66,6 +72,7 @@ spec:
               value: "/var/lib/boxy/sandboxes"
             - name: BOXY_NSJAIL_BINARIES_DIR
               value: {{ .Values.controller.nsjail.binariesDir | default "/usr/local/bin" | quote }}
+            {{- include "boxy.otelEnv" . | nindent 12 }}
           {{- with .Values.controller.resources }}
           resources:
             {{- toYaml . | nindent 12 }}

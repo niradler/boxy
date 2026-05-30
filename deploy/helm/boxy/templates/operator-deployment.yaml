@@ -62,9 +62,14 @@ spec:
               value: "/tls/tls.crt"
             - name: BOXY_TLS_CLIENT_KEY_PATH
               value: "/tls/tls.key"
+            - name: BOXY_METRICS_ADDR
+              value: ":{{ .Values.metrics.operatorMetricsPort }}"
+            {{- include "boxy.otelEnv" . | nindent 12 }}
           ports:
             - name: health
               containerPort: 8081
+            - name: metrics
+              containerPort: {{ .Values.metrics.operatorMetricsPort }}
           livenessProbe:
             httpGet:
               path: /healthz
