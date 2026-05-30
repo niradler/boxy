@@ -142,6 +142,40 @@ type ExecResult struct {
 	TimedOut bool   `json:"timed_out"`
 }
 
+type FileReadReq struct {
+	SandboxID string `json:"sandbox_id"`
+	Path      string `json:"path"`
+}
+
+type FileReadResult struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type FileWriteReq struct {
+	SandboxID string `json:"sandbox_id"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+}
+
+type FileWriteResult struct {
+	Path         string `json:"path"`
+	BytesWritten int    `json:"bytes_written"`
+}
+
+type FileEditReq struct {
+	SandboxID  string `json:"sandbox_id"`
+	Path       string `json:"path"`
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
+}
+
+type FileEditResult struct {
+	Path         string `json:"path"`
+	Replacements int    `json:"replacements"`
+}
+
 type DeleteSandboxReq struct {
 	SandboxID string `json:"sandbox_id"`
 }
@@ -206,6 +240,30 @@ func (c *Client) ExecStream(ctx context.Context, baseURL string, req ExecReq, on
 		return nil, fmt.Errorf("read stream: %w", err)
 	}
 	return &result, nil
+}
+
+func (c *Client) ReadFile(ctx context.Context, baseURL string, req FileReadReq) (*FileReadResult, error) {
+	var out FileReadResult
+	if err := c.postJSON(ctx, baseURL+"/v1/files/read", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) WriteFile(ctx context.Context, baseURL string, req FileWriteReq) (*FileWriteResult, error) {
+	var out FileWriteResult
+	if err := c.postJSON(ctx, baseURL+"/v1/files/write", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) EditFile(ctx context.Context, baseURL string, req FileEditReq) (*FileEditResult, error) {
+	var out FileEditResult
+	if err := c.postJSON(ctx, baseURL+"/v1/files/edit", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) DeleteSandbox(ctx context.Context, baseURL string, req DeleteSandboxReq) error {

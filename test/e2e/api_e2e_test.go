@@ -241,6 +241,104 @@ func TestMCPBashTool(t *testing.T) {
 	}
 }
 
+func TestMCPFileTools(t *testing.T) {
+	base, tok := testCreds(t)
+
+	sandboxID := "e2e-mcp-files-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	createSandboxHelper(t, base, tok, api.SandboxCreateBody{
+		SandboxID:  sandboxID,
+		TTLSeconds: 600,
+	})
+
+	warmupRes := postExecRaw(t, base, tok, api.ExecRequestBody{
+		SandboxID: sandboxID, Command: "echo", Args: []string{"hi"}, TimeoutSeconds: 120,
+	})
+	warmupRes.Body.Close()
+	sessionID := warmupRes.Header.Get("X-Boxy-Session-Id")
+	if sessionID == "" {
+		t.Fatal("X-Boxy-Session-Id header missing")
+	}
+	t.Cleanup(func() { deleteSession(t, base, tok, sessionID) })
+	waitSessionReady(t, base, tok, sessionID)
+
+	mcpText := func(id int, name string, args map[string]any) string {
+		t.Helper()
+		resp := postMCP(t, base, tok, jsonRPCRequest{
+			Jsonrpc: "2.0", ID: id, Method: "tools/call",
+			Params: map[string]any{"name": name, "arguments": args},
+		}, sessionID)
+		if resp.Error != nil {
+			t.Fatalf("%s error: %s", name, resp.Error.Message)
+		}
+		var tr struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		}
+		if err := json.Unmarshal(resp.Result, &tr); err != nil {
+			t.Fatalf("%s decode: %v (%s)", name, err, resp.Result)
+		}
+		if tr.IsError {
+			t.Fatalf("%s returned tool error: %s", name, resp.Result)
+		}
+		if len(tr.Content) == 0 {
+			t.Fatalf("%s empty content: %s", name, resp.Result)
+		}
+		return tr.Content[0].Text
+	}
+
+	if got := mcpText(1, "write_file", map[string]any{
+		"path": "/workspace/notes/todo.txt", "content": "first line\nsecond line\n",
+	}); !strings.Contains(got, "wrote") {
+		t.Fatalf("write_file: %q", got)
+	}
+
+	if got := mcpText(2, "read_file", map[string]any{"path": "notes/todo.txt"}); got != "first line\nsecond line\n" {
+		t.Fatalf("read_file mismatch: %q", got)
+	}
+
+	if got := mcpText(3, "edit_file", map[string]any{
+		"path": "/workspace/notes/todo.txt", "oldString": "second", "newString": "edited",
+	}); !strings.Contains(got, "1 replacement") {
+		t.Fatalf("edit_file: %q", got)
+	}
+
+	if got := mcpText(4, "bash", map[string]any{"command": "cat /workspace/notes/todo.txt"}); got != "first line\nedited line\n" {
+		t.Fatalf("file content via bash mismatch: %q", got)
+	}
+
+	if got := mcpText(7, "write_file", map[string]any{"path": "~/home-rel.txt", "content": "tilde"}); !strings.Contains(got, "wrote") {
+		t.Fatalf("write_file ~: %q", got)
+	}
+	if got := mcpText(8, "bash", map[string]any{"command": "cat /workspace/home-rel.txt"}); got != "tilde" {
+		t.Fatalf("tilde path did not resolve under /workspace: %q", got)
+	}
+
+	expectToolError := func(id int, name string, args map[string]any) {
+		t.Helper()
+		resp := postMCP(t, base, tok, jsonRPCRequest{
+			Jsonrpc: "2.0", ID: id, Method: "tools/call",
+			Params: map[string]any{"name": name, "arguments": args},
+		}, sessionID)
+		if resp.Error != nil {
+			t.Fatalf("%s rpc error: %s", name, resp.Error.Message)
+		}
+		var r struct {
+			IsError bool `json:"isError"`
+		}
+		_ = json.Unmarshal(resp.Result, &r)
+		if !r.IsError {
+			t.Fatalf("%s expected tool error, got: %s", name, resp.Result)
+		}
+	}
+
+	expectToolError(5, "read_file", map[string]any{"path": "/workspace/does-not-exist"})
+	expectToolError(6, "edit_file", map[string]any{
+		"path": "/workspace/notes/todo.txt", "oldString": "line", "newString": "X",
+	})
+}
+
 // TestMCPCrossSandboxIsolation verifies that the MCP bash tool cannot read
 // files written in a different sandbox's session, even when both sandboxes
 // are accessible with the same auth token.

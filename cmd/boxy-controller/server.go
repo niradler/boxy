@@ -50,6 +50,40 @@ type execResp struct {
 	TimedOut bool   `json:"timed_out"`
 }
 
+type fileReadReq struct {
+	SandboxID string `json:"sandbox_id"`
+	Path      string `json:"path"`
+}
+
+type fileReadResp struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type fileWriteReq struct {
+	SandboxID string `json:"sandbox_id"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+}
+
+type fileWriteResp struct {
+	Path         string `json:"path"`
+	BytesWritten int    `json:"bytes_written"`
+}
+
+type fileEditReq struct {
+	SandboxID  string `json:"sandbox_id"`
+	Path       string `json:"path"`
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
+}
+
+type fileEditResp struct {
+	Path         string `json:"path"`
+	Replacements int    `json:"replacements"`
+}
+
 type deleteSandboxReq struct {
 	SandboxID string `json:"sandbox_id"`
 }
@@ -90,6 +124,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sandboxes", s.handleDelete)
 	mux.HandleFunc("POST /v1/exec", s.handleExec)
 	mux.HandleFunc("POST /v1/exec/stream", s.handleExecStream)
+	mux.HandleFunc("POST /v1/files/read", s.handleFileRead)
+	mux.HandleFunc("POST /v1/files/write", s.handleFileWrite)
+	mux.HandleFunc("POST /v1/files/edit", s.handleFileEdit)
 	return s.tokenMiddleware(mux)
 }
 
@@ -298,6 +335,82 @@ func (s *server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+func (s *server) handleFileRead(w http.ResponseWriter, r *http.Request) {
+	var req fileReadReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.SandboxID) == "" {
+		writeErr(w, http.StatusBadRequest, "sandbox_id required")
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		writeErr(w, http.StatusBadRequest, "path required")
+		return
+	}
+
+	data, err := s.adapter.ReadFile(r.Context(), req.SandboxID, req.Path)
+	if err != nil {
+		code, msg := adapterErrToHTTP(err)
+		writeErr(w, code, msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, fileReadResp{Path: req.Path, Content: s.truncateOutput(string(data))})
+}
+
+func (s *server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
+	var req fileWriteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.SandboxID) == "" {
+		writeErr(w, http.StatusBadRequest, "sandbox_id required")
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		writeErr(w, http.StatusBadRequest, "path required")
+		return
+	}
+
+	n, err := s.adapter.WriteFile(r.Context(), req.SandboxID, req.Path, req.Content)
+	if err != nil {
+		code, msg := adapterErrToHTTP(err)
+		writeErr(w, code, msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, fileWriteResp{Path: req.Path, BytesWritten: n})
+}
+
+func (s *server) handleFileEdit(w http.ResponseWriter, r *http.Request) {
+	var req fileEditReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.SandboxID) == "" {
+		writeErr(w, http.StatusBadRequest, "sandbox_id required")
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		writeErr(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if req.OldString == "" {
+		writeErr(w, http.StatusBadRequest, "old_string required")
+		return
+	}
+
+	n, err := s.adapter.EditFile(r.Context(), req.SandboxID, req.Path, req.OldString, req.NewString, req.ReplaceAll)
+	if err != nil {
+		code, msg := adapterErrToHTTP(err)
+		writeErr(w, code, msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, fileEditResp{Path: req.Path, Replacements: n})
 }
 
 func (s *server) truncateOutput(out string) string {

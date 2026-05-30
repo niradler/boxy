@@ -79,3 +79,23 @@ func TestValidateExecBlockedEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateFilePath(t *testing.T) {
+	valid := []string{"a.txt", "sub/dir/file", "/workspace/x", "/workspace", ".hidden", "/etc/hosts"}
+	for _, p := range valid {
+		if err := ValidateFilePath(p); err != nil {
+			t.Errorf("ValidateFilePath(%q) = %v, want nil", p, err)
+		}
+	}
+
+	invalid := []string{"", "   ", "a\x00b"}
+	for _, p := range invalid {
+		if err := ValidateFilePath(p); err == nil {
+			t.Errorf("ValidateFilePath(%q) = nil, want error", p)
+		}
+	}
+
+	if err := ValidateFilePath(strings.Repeat("a", maxFilePathLen+1)); err == nil {
+		t.Error("expected error for over-long path")
+	}
+}

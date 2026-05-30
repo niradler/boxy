@@ -293,6 +293,11 @@ Accept: application/json, text/event-stream
 | Tool | Parameters |
 |---|---|
 | `bash` | `command` (string, required), `timeoutSeconds` (int, default 60) |
+| `read_file` | `path` (string, required) |
+| `write_file` | `path` (string, required), `content` (string, required) |
+| `edit_file` | `path` (string, required), `oldString` (string, required), `newString` (string, required), `replaceAll` (bool, default false) |
+
+The file tools run inside the sandbox as the sandbox user, with the same isolation as `bash`. Absolute paths resolve within the sandbox filesystem; relative paths resolve under `/workspace` (the writable per-sandbox mount). `write_file` creates parent directories and overwrites; `edit_file` requires `oldString` to be unique unless `replaceAll` is set. These are text-oriented; use `bash` for binary data.
 
 ```bash
 # MCP initialize

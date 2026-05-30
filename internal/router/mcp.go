@@ -10,12 +10,29 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	boxyv1 "boxy.dev/boxy/api/v1alpha1"
+	"boxy.dev/boxy/internal/api"
 	ctrlclient "boxy.dev/boxy/internal/controller"
 )
 
 type bashParams struct {
 	Command        string `json:"command" jsonschema:"Shell command to execute,required"`
 	TimeoutSeconds int    `json:"timeoutSeconds,omitempty" jsonschema:"Timeout in seconds (default 60)"`
+}
+
+type readFileParams struct {
+	Path string `json:"path" jsonschema:"Path under /workspace (absolute or relative),required"`
+}
+
+type writeFileParams struct {
+	Path    string `json:"path" jsonschema:"Absolute path inside the sandbox (e.g. /workspace/file),required"`
+	Content string `json:"content" jsonschema:"File content,required"`
+}
+
+type editFileParams struct {
+	Path       string `json:"path" jsonschema:"Absolute path inside the sandbox,required"`
+	OldString  string `json:"oldString" jsonschema:"Exact text to replace,required"`
+	NewString  string `json:"newString" jsonschema:"Replacement text,required"`
+	ReplaceAll bool   `json:"replaceAll,omitempty" jsonschema:"Replace all occurrences (default false)"`
 }
 
 func (s *Server) newMCPHandler() http.Handler {
@@ -35,6 +52,27 @@ func (s *Server) newMCPHandler() http.Handler {
 			return s.mcpBashTool(ctx, req, sandboxID, sessionID, params)
 		})
 
+		mcp.AddTool(mcpSrv, &mcp.Tool{
+			Name:        "read_file",
+			Description: "Read a file from the sandbox /workspace directory",
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, params readFileParams) (*mcp.CallToolResult, any, error) {
+			return s.mcpReadFileTool(ctx, sandboxID, sessionID, params)
+		})
+
+		mcp.AddTool(mcpSrv, &mcp.Tool{
+			Name:        "write_file",
+			Description: "Create or overwrite a file in the sandbox /workspace directory",
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, params writeFileParams) (*mcp.CallToolResult, any, error) {
+			return s.mcpWriteFileTool(ctx, sandboxID, sessionID, params)
+		})
+
+		mcp.AddTool(mcpSrv, &mcp.Tool{
+			Name:        "edit_file",
+			Description: "Replace an exact string in a file in the sandbox /workspace directory",
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, params editFileParams) (*mcp.CallToolResult, any, error) {
+			return s.mcpEditFileTool(ctx, sandboxID, sessionID, params)
+		})
+
 		return mcpSrv
 	}, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
@@ -42,11 +80,52 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
-func toolError(text string) (*mcp.CallToolResult, any, error) {
+func toolErrResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		IsError: true,
-	}, nil, nil
+	}
+}
+
+func toolError(text string) (*mcp.CallToolResult, any, error) {
+	return toolErrResult(text), nil, nil
+}
+
+func (s *Server) resolveToolSession(ctx context.Context, sandboxID, sessionID string) (*boxyv1.Session, *mcp.CallToolResult) {
+	var session *boxyv1.Session
+	var err error
+
+	if strings.TrimSpace(sessionID) != "" {
+		session, err = s.lookupSession(ctx, sessionID)
+		if err != nil {
+			return nil, toolErrResult("store error: " + err.Error())
+		}
+		if session == nil {
+			return nil, toolErrResult(fmt.Sprintf("session %q not found", sessionID))
+		}
+		if strings.TrimSpace(sandboxID) != "" && session.Spec.SandboxID != sandboxID {
+			return nil, toolErrResult(fmt.Sprintf("session %q does not belong to sandbox %q", sessionID, sandboxID))
+		}
+	}
+
+	if session == nil {
+		_, resolvedSessionID, resolveErr := s.resolveDefaultSession(ctx, sandboxID)
+		if resolveErr != nil {
+			return nil, toolErrResult("no session specified and default session unavailable: " + resolveErr.Error())
+		}
+		session, err = s.lookupSession(ctx, resolvedSessionID)
+		if err != nil || session == nil {
+			return nil, toolErrResult(fmt.Sprintf("default session %q not found", resolvedSessionID))
+		}
+	}
+
+	if err := s.canResourceAccess(ctx, "update", "sessions", session.Name); err != nil {
+		return nil, toolErrResult("forbidden")
+	}
+	if session.Status.Phase != boxyv1.SandboxPhaseRunning {
+		return nil, toolErrResult(fmt.Sprintf("session %q not running (phase: %s)", session.Spec.SessionID, session.Status.Phase))
+	}
+	return session, nil
 }
 
 func toolText(text string) (*mcp.CallToolResult, any, error) {
@@ -63,40 +142,9 @@ func (s *Server) mcpBashTool(ctx context.Context, req *mcp.CallToolRequest, sand
 		params.TimeoutSeconds = 60
 	}
 
-	var session *boxyv1.Session
-	var err error
-
-	if strings.TrimSpace(sessionID) != "" {
-		session, err = s.lookupSession(ctx, sessionID)
-		if err != nil {
-			return toolError("store error: " + err.Error())
-		}
-		if session == nil {
-			return toolError(fmt.Sprintf("session %q not found", sessionID))
-		}
-		if strings.TrimSpace(sandboxID) != "" && session.Spec.SandboxID != sandboxID {
-			return toolError(fmt.Sprintf("session %q does not belong to sandbox %q", sessionID, sandboxID))
-		}
-	}
-
-	if session == nil {
-		resolvedSandboxID, resolvedSessionID, resolveErr := s.resolveDefaultSession(ctx, sandboxID)
-		if resolveErr != nil {
-			return toolError("no session specified and default session unavailable: " + resolveErr.Error())
-		}
-		sandboxID = resolvedSandboxID
-		sessionID = resolvedSessionID
-		session, err = s.lookupSession(ctx, sessionID)
-		if err != nil || session == nil {
-			return toolError(fmt.Sprintf("default session %q not found", sessionID))
-		}
-	}
-
-	if err := s.canResourceAccess(ctx, "update", "sessions", session.Name); err != nil {
-		return toolError("forbidden")
-	}
-	if session.Status.Phase != boxyv1.SandboxPhaseRunning {
-		return toolError(fmt.Sprintf("session %q not running (phase: %s)", session.Spec.SessionID, session.Status.Phase))
+	session, errRes := s.resolveToolSession(ctx, sandboxID, sessionID)
+	if errRes != nil {
+		return errRes, nil, nil
 	}
 
 	select {
@@ -179,6 +227,109 @@ func (s *Server) mcpBashTool(ctx context.Context, req *mcp.CallToolRequest, sand
 		return toolError(text)
 	}
 	return toolText(text)
+}
+
+func (s *Server) mcpReadFileTool(ctx context.Context, sandboxID, sessionID string, params readFileParams) (*mcp.CallToolResult, any, error) {
+	if err := api.ValidateFilePath(params.Path); err != nil {
+		return toolError(err.Error())
+	}
+
+	session, errRes := s.resolveToolSession(ctx, sandboxID, sessionID)
+	if errRes != nil {
+		return errRes, nil, nil
+	}
+
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		return toolError("concurrency limit reached, try again later")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	res, err := s.ctrlClient.ReadFile(ctx, s.controllerURLFromSession(session), ctrlclient.FileReadReq{
+		SandboxID: session.Spec.SessionID,
+		Path:      params.Path,
+	})
+	if err != nil {
+		return toolError("read error: " + err.Error())
+	}
+
+	go s.touchLastExecSession(session.DeepCopy())
+	return toolText(res.Content)
+}
+
+func (s *Server) mcpWriteFileTool(ctx context.Context, sandboxID, sessionID string, params writeFileParams) (*mcp.CallToolResult, any, error) {
+	if err := api.ValidateFilePath(params.Path); err != nil {
+		return toolError(err.Error())
+	}
+
+	session, errRes := s.resolveToolSession(ctx, sandboxID, sessionID)
+	if errRes != nil {
+		return errRes, nil, nil
+	}
+
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		return toolError("concurrency limit reached, try again later")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	res, err := s.ctrlClient.WriteFile(ctx, s.controllerURLFromSession(session), ctrlclient.FileWriteReq{
+		SandboxID: session.Spec.SessionID,
+		Path:      params.Path,
+		Content:   params.Content,
+	})
+	if err != nil {
+		return toolError("write error: " + err.Error())
+	}
+
+	go s.touchLastExecSession(session.DeepCopy())
+	return toolText(fmt.Sprintf("wrote %d bytes to %s", res.BytesWritten, res.Path))
+}
+
+func (s *Server) mcpEditFileTool(ctx context.Context, sandboxID, sessionID string, params editFileParams) (*mcp.CallToolResult, any, error) {
+	if err := api.ValidateFilePath(params.Path); err != nil {
+		return toolError(err.Error())
+	}
+	if params.OldString == "" {
+		return toolError("oldString is required")
+	}
+
+	session, errRes := s.resolveToolSession(ctx, sandboxID, sessionID)
+	if errRes != nil {
+		return errRes, nil, nil
+	}
+
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		return toolError("concurrency limit reached, try again later")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	res, err := s.ctrlClient.EditFile(ctx, s.controllerURLFromSession(session), ctrlclient.FileEditReq{
+		SandboxID:  session.Spec.SessionID,
+		Path:       params.Path,
+		OldString:  params.OldString,
+		NewString:  params.NewString,
+		ReplaceAll: params.ReplaceAll,
+	})
+	if err != nil {
+		return toolError("edit error: " + err.Error())
+	}
+
+	go s.touchLastExecSession(session.DeepCopy())
+	return toolText(fmt.Sprintf("made %d replacement(s) in %s", res.Replacements, res.Path))
 }
 
 func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (string, string, error) {

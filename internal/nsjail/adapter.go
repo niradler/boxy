@@ -31,6 +31,9 @@ type Adapter interface {
 	// multiple goroutines concurrently. The returned ExecResponseBody carries
 	// the final (truncated, if applicable) stdout/stderr.
 	ExecStream(ctx context.Context, sandboxID string, command string, args []string, env map[string]string, timeoutSecs int, onEvent func(string, string)) (*api.ExecResponseBody, error)
+	ReadFile(ctx context.Context, sandboxID, path string) ([]byte, error)
+	WriteFile(ctx context.Context, sandboxID, path, content string) (int, error)
+	EditFile(ctx context.Context, sandboxID, path, oldStr, newStr string, replaceAll bool) (int, error)
 	Delete(ctx context.Context, sandboxID string) error
 	ListIDs() []string
 	Count() int
@@ -134,6 +137,19 @@ func (a *NsjailAdapter) Exec(
 	timeoutSecs int,
 	pty bool,
 ) (*api.ExecResponseBody, error) {
+	return a.execWithStdin(ctx, sandboxID, command, args, env, timeoutSecs, pty, nil)
+}
+
+func (a *NsjailAdapter) execWithStdin(
+	ctx context.Context,
+	sandboxID string,
+	command string,
+	args []string,
+	env map[string]string,
+	timeoutSecs int,
+	pty bool,
+	stdin []byte,
+) (*api.ExecResponseBody, error) {
 	a.mu.RLock()
 	sb, ok := a.sandboxes[sandboxID]
 	a.mu.RUnlock()
@@ -168,6 +184,9 @@ func (a *NsjailAdapter) Exec(
 	defer cancel()
 
 	nsjailCmd := exec.CommandContext(deadline, a.cfg.NsjailPath, cmdArgs...)
+	if stdin != nil {
+		nsjailCmd.Stdin = bytes.NewReader(stdin)
+	}
 
 	if pty {
 		return a.execPTY(deadline, nsjailCmd, timeoutSecs)
@@ -351,7 +370,6 @@ func (a *NsjailAdapter) buildExecResponse(
 	}, nil
 }
 
-
 // limitWriter is an io.Writer that stops accepting data once limit bytes have
 // been written, silently discarding additional bytes. Zero limit = unlimited.
 type limitWriter struct {
@@ -374,6 +392,79 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 }
 
 func (lw *limitWriter) String() string { return lw.buf.String() }
+
+const fileOpTimeoutSecs = 30
+
+func sandboxFilePath(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		p = strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/")
+	}
+	if strings.HasPrefix(p, "/") {
+		return p
+	}
+	return "/workspace/" + p
+}
+
+func (a *NsjailAdapter) ReadFile(ctx context.Context, sandboxID, path string) ([]byte, error) {
+	res, err := a.Exec(ctx, sandboxID, "sh", []string{"-c", `cat -- "$1"`, "sh", sandboxFilePath(path)}, nil, fileOpTimeoutSecs, false)
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, errBadRequest(fileOpError("read", res.Stderr))
+	}
+	return []byte(res.Stdout), nil
+}
+
+func (a *NsjailAdapter) WriteFile(ctx context.Context, sandboxID, path string, content string) (int, error) {
+	res, err := a.execWithStdin(ctx, sandboxID, "sh",
+		[]string{"-c", `mkdir -p -- "$(dirname -- "$1")" && cat > "$1"`, "sh", sandboxFilePath(path)},
+		nil, fileOpTimeoutSecs, false, []byte(content))
+	if err != nil {
+		return 0, err
+	}
+	if res.ExitCode != 0 {
+		return 0, errBadRequest(fileOpError("write", res.Stderr))
+	}
+	return len(content), nil
+}
+
+func (a *NsjailAdapter) EditFile(ctx context.Context, sandboxID, path, oldStr, newStr string, replaceAll bool) (int, error) {
+	if oldStr == "" {
+		return 0, errBadRequest("oldString must not be empty")
+	}
+	data, err := a.ReadFile(ctx, sandboxID, path)
+	if err != nil {
+		return 0, err
+	}
+	content := string(data)
+	count := strings.Count(content, oldStr)
+	if count == 0 {
+		return 0, errBadRequest("oldString not found in file")
+	}
+	if count > 1 && !replaceAll {
+		return 0, errBadRequest(fmt.Sprintf("oldString is not unique (%d matches); add context or set replaceAll", count))
+	}
+
+	if replaceAll {
+		content = strings.ReplaceAll(content, oldStr, newStr)
+	} else {
+		content = strings.Replace(content, oldStr, newStr, 1)
+		count = 1
+	}
+
+	if _, err := a.WriteFile(ctx, sandboxID, path, content); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func fileOpError(op, stderr string) string {
+	if s := strings.TrimSpace(stderr); s != "" {
+		return s
+	}
+	return op + " failed"
+}
 
 func (a *NsjailAdapter) Delete(ctx context.Context, sandboxID string) error {
 	a.mu.Lock()
