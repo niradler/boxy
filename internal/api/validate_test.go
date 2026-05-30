@@ -99,3 +99,16 @@ func TestValidateFilePath(t *testing.T) {
 		t.Error("expected error for over-long path")
 	}
 }
+
+func TestValidateFileEncoding(t *testing.T) {
+	for _, e := range []string{"", "utf-8", "utf8", "UTF-8", "base64", "BASE64"} {
+		if err := ValidateFileEncoding(e); err != nil {
+			t.Errorf("ValidateFileEncoding(%q) = %v, want nil", e, err)
+		}
+	}
+	for _, e := range []string{"ascii", "hex", "binary"} {
+		if err := ValidateFileEncoding(e); err == nil {
+			t.Errorf("ValidateFileEncoding(%q) = nil, want error", e)
+		}
+	}
+}

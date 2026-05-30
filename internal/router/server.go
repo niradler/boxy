@@ -24,6 +24,7 @@ import (
 	boxyv1 "boxy.dev/boxy/api/v1alpha1"
 	"boxy.dev/boxy/internal/api"
 	ctrlclient "boxy.dev/boxy/internal/controller"
+	"boxy.dev/boxy/internal/telemetry"
 )
 
 type Config struct {
@@ -136,16 +137,18 @@ func ConfigFromEnv() (*Config, error) {
 }
 
 type Server struct {
-	cfg        Config
-	log        *slog.Logger
-	sem        chan struct{}
-	k8sClient  client.Client
-	k8sReader  client.Reader
-	ctrlClient *ctrlclient.Client
-	auth       *tokenReviewer
+	cfg            Config
+	log            *slog.Logger
+	sem            chan struct{}
+	k8sClient      client.Client
+	k8sReader      client.Reader
+	ctrlClient     *ctrlclient.Client
+	auth           *tokenReviewer
+	metrics        *routerMetrics
+	metricsHandler http.Handler
 }
 
-func NewServer(ctx context.Context, cfg Config, k8sClient client.Client, k8sReader client.Reader, cs kubernetes.Interface) *Server {
+func NewServer(ctx context.Context, cfg Config, k8sClient client.Client, k8sReader client.Reader, cs kubernetes.Interface, tp *telemetry.Provider) *Server {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 1
 	}
@@ -153,7 +156,7 @@ func NewServer(ctx context.Context, cfg Config, k8sClient client.Client, k8sRead
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	return &Server{
+	s := &Server{
 		cfg:       cfg,
 		log:       slog.Default(),
 		sem:       make(chan struct{}, cfg.MaxConcurrency),
@@ -168,6 +171,16 @@ func NewServer(ctx context.Context, cfg Config, k8sClient client.Client, k8sRead
 			ControllerToken: cfg.ControllerToken,
 		}),
 	}
+	if tp != nil {
+		rm, err := newRouterMetrics(tp.Meter("boxy.dev/boxy/router"), cfg.MaxConcurrency)
+		if err != nil {
+			s.log.Error("router metrics init failed; continuing without metrics", "err", err)
+		} else {
+			s.metrics = rm
+			s.metricsHandler = tp.MetricsHandler()
+		}
+	}
+	return s
 }
 
 func NewScheme() *runtime.Scheme {
@@ -180,6 +193,9 @@ func NewScheme() *runtime.Scheme {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	if s.metricsHandler != nil {
+		mux.Handle("GET /metrics", s.metricsHandler)
+	}
 
 	mux.HandleFunc("POST /v1/sessions/exec", s.withAuth(s.withBodyLimit(s.handleSessionExec)))
 	mux.HandleFunc("POST /v1/sessions/exec/stream", s.withAuth(s.withBodyLimit(s.handleSessionExecStream)))
@@ -197,7 +213,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes/{sandboxId}/sessions", s.withAuth(s.handleSandboxSessions))
 
 	mux.Handle("/mcp", s.withAuthHandler(s.newMCPHandler()))
-	return mux
+	return s.metrics.middleware(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -156,6 +156,7 @@ type FileWriteReq struct {
 	SandboxID string `json:"sandbox_id"`
 	Path      string `json:"path"`
 	Content   string `json:"content"`
+	Encoding  string `json:"encoding,omitempty"`
 }
 
 type FileWriteResult struct {

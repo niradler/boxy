@@ -88,6 +88,7 @@ func (r *SessionReconciler) tryScaleDown(ctx context.Context) error {
 			return fmt.Errorf("scale down: %w", err)
 		}
 		r.log.Info("scaled down controller StatefulSet", "from", current, "to", desired, "removedPod", p.Name)
+		r.cfg.Metrics.ScaledDown(ctx)
 		current = desired
 	}
 

@@ -31,6 +31,7 @@ type ReconcilerConfig struct {
 	TerminatedRetentionSec int
 	ScaleDownCooldown      time.Duration
 	MTLSDisabled           bool
+	Metrics                *OperatorMetrics
 }
 
 type SessionReconciler struct {
@@ -403,12 +404,18 @@ func (r *SessionReconciler) assignController(ctx context.Context) (podName, addr
 }
 
 func (r *SessionReconciler) scaleUp(ctx context.Context) error {
-	return r.scaleStatefulSet(ctx, func(current int32) (int32, error) {
+	// adjustFn always returns current+1 here (or errors at max), so a nil result
+	// means a real scale-up occurred.
+	if err := r.scaleStatefulSet(ctx, func(current int32) (int32, error) {
 		if current >= r.cfg.MaxControllerReplicas {
 			return 0, fmt.Errorf("already at max controller replicas (%d)", r.cfg.MaxControllerReplicas)
 		}
 		return current + 1, nil
-	})
+	}); err != nil {
+		return err
+	}
+	r.cfg.Metrics.ScaledUp(ctx)
+	return nil
 }
 
 func (r *SessionReconciler) scaleStatefulSet(ctx context.Context, adjustFn func(int32) (int32, error)) error {

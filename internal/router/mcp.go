@@ -24,8 +24,9 @@ type readFileParams struct {
 }
 
 type writeFileParams struct {
-	Path    string `json:"path" jsonschema:"Absolute path inside the sandbox (e.g. /workspace/file),required"`
-	Content string `json:"content" jsonschema:"File content,required"`
+	Path     string `json:"path" jsonschema:"Absolute path inside the sandbox (e.g. /workspace/file),required"`
+	Content  string `json:"content" jsonschema:"File content,required"`
+	Encoding string `json:"encoding,omitempty" jsonschema:"Content encoding: utf-8 (default) or base64 for binary"`
 }
 
 type editFileParams struct {
@@ -265,6 +266,9 @@ func (s *Server) mcpWriteFileTool(ctx context.Context, sandboxID, sessionID stri
 	if err := api.ValidateFilePath(params.Path); err != nil {
 		return toolError(err.Error())
 	}
+	if err := api.ValidateFileEncoding(params.Encoding); err != nil {
+		return toolError(err.Error())
+	}
 
 	session, errRes := s.resolveToolSession(ctx, sandboxID, sessionID)
 	if errRes != nil {
@@ -285,6 +289,7 @@ func (s *Server) mcpWriteFileTool(ctx context.Context, sandboxID, sessionID stri
 		SandboxID: session.Spec.SessionID,
 		Path:      params.Path,
 		Content:   params.Content,
+		Encoding:  params.Encoding,
 	})
 	if err != nil {
 		return toolError("write error: " + err.Error())

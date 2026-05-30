@@ -14,3 +14,8 @@ spec:
     - name: http
       port: {{ .Values.controller.port }}
       targetPort: http
+    {{- if .Values.controller.metricsPort }}
+    - name: metrics
+      port: {{ .Values.controller.metricsPort }}
+      targetPort: metrics
+    {{- end }}

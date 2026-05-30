@@ -5,6 +5,7 @@ package e2e
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -337,6 +338,18 @@ func TestMCPFileTools(t *testing.T) {
 	expectToolError(6, "edit_file", map[string]any{
 		"path": "/workspace/notes/todo.txt", "oldString": "line", "newString": "X",
 	})
+
+	binary := []byte{0x00, 0xff, 0x10, 0x80, 0x7f}
+	b64 := base64.StdEncoding.EncodeToString(binary)
+	if got := mcpText(9, "write_file", map[string]any{
+		"path": "/workspace/blob.bin", "content": b64, "encoding": "base64",
+	}); !strings.Contains(got, "wrote 5 bytes") {
+		t.Fatalf("base64 write: %q", got)
+	}
+	if got := mcpText(10, "bash", map[string]any{"command": "wc -c < /workspace/blob.bin"}); strings.TrimSpace(got) != "5" {
+		t.Fatalf("binary file size via bash = %q, want 5", got)
+	}
+	expectToolError(11, "read_file", map[string]any{"path": "/workspace/blob.bin"})
 }
 
 // TestMCPCrossSandboxIsolation verifies that the MCP bash tool cannot read

@@ -294,10 +294,10 @@ Accept: application/json, text/event-stream
 |---|---|
 | `bash` | `command` (string, required), `timeoutSeconds` (int, default 60) |
 | `read_file` | `path` (string, required) |
-| `write_file` | `path` (string, required), `content` (string, required) |
+| `write_file` | `path` (string, required), `content` (string, required), `encoding` (`utf-8` default or `base64`) |
 | `edit_file` | `path` (string, required), `oldString` (string, required), `newString` (string, required), `replaceAll` (bool, default false) |
 
-The file tools run inside the sandbox as the sandbox user, with the same isolation as `bash`. Absolute paths resolve within the sandbox filesystem; relative paths resolve under `/workspace` (the writable per-sandbox mount). `write_file` creates parent directories and overwrites; `edit_file` requires `oldString` to be unique unless `replaceAll` is set. These are text-oriented; use `bash` for binary data.
+The file tools run inside the sandbox as the sandbox user, with the same isolation as `bash`. Absolute paths resolve within the sandbox filesystem; relative paths resolve under `/workspace` (the writable per-sandbox mount). `write_file` creates parent directories and overwrites; `edit_file` requires `oldString` to be unique unless `replaceAll` is set. The tools are text-oriented: `read_file` returns an error for non-UTF8 files (use `bash` to inspect binary), while `write_file` accepts `encoding: base64` to create binary files.
 
 ```bash
 # MCP initialize

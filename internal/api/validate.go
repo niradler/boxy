@@ -136,6 +136,14 @@ func ValidateFilePath(path string) error {
 	return nil
 }
 
+func ValidateFileEncoding(enc string) error {
+	switch strings.ToLower(strings.TrimSpace(enc)) {
+	case "", "utf-8", "utf8", "base64":
+		return nil
+	}
+	return fmt.Errorf("encoding must be 'utf-8' or 'base64'")
+}
+
 func ValidateSandboxID(id string) error {
 	return validateLabelBackedName("sandboxId", id)
 }

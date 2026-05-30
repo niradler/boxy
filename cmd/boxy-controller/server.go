@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"boxy.dev/boxy/internal/api"
 	"boxy.dev/boxy/internal/nsjail"
@@ -64,6 +66,7 @@ type fileWriteReq struct {
 	SandboxID string `json:"sandbox_id"`
 	Path      string `json:"path"`
 	Content   string `json:"content"`
+	Encoding  string `json:"encoding,omitempty"`
 }
 
 type fileWriteResp struct {
@@ -101,9 +104,11 @@ type server struct {
 	adapter        nsjail.Adapter
 	execSem        chan struct{}
 	maxOutputBytes int
+	metrics        *controllerMetrics
+	metricsHandler http.Handler
 }
 
-func newServer(cfg *config, adapter nsjail.Adapter) *server {
+func newServer(cfg *config, adapter nsjail.Adapter, metrics *controllerMetrics, metricsHandler http.Handler) *server {
 	concurrency := cfg.maxExecConcurrency
 	if concurrency <= 0 {
 		concurrency = 50
@@ -113,12 +118,17 @@ func newServer(cfg *config, adapter nsjail.Adapter) *server {
 		adapter:        adapter,
 		execSem:        make(chan struct{}, concurrency),
 		maxOutputBytes: cfg.maxOutputBytes,
+		metrics:        metrics,
+		metricsHandler: metricsHandler,
 	}
 }
 
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	if s.metricsHandler != nil {
+		mux.Handle("GET /metrics", s.metricsHandler)
+	}
 	mux.HandleFunc("POST /v1/sandboxes", s.handleCreate)
 	mux.HandleFunc("GET /v1/sandboxes", s.handleList)
 	mux.HandleFunc("DELETE /v1/sandboxes", s.handleDelete)
@@ -139,7 +149,7 @@ func (s *server) tokenMiddleware(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -191,6 +201,7 @@ func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.metrics.sandboxCreated(r.Context())
 	writeJSON(w, http.StatusCreated, createSandboxResp{SandboxID: req.SandboxID})
 }
 
@@ -218,6 +229,7 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, code, msg)
 		return
 	}
+	s.metrics.sandboxDeleted(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -243,6 +255,7 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case s.execSem <- struct{}{}:
 		defer func() { <-s.execSem }()
 	default:
+		s.metrics.execThrottled(r.Context())
 		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
 		return
 	}
@@ -250,13 +263,16 @@ func (s *server) handleExec(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutSeconds+5)*time.Second)
 	defer cancel()
 
+	start := time.Now()
 	result, err := s.adapter.Exec(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds, req.PTY)
 	if err != nil {
+		s.metrics.recordExec(ctx, req.SandboxID, "error", time.Since(start).Seconds(), 0)
 		code, msg := adapterErrToHTTP(err)
 		writeErr(w, code, msg)
 		return
 	}
 
+	s.metrics.recordExec(ctx, req.SandboxID, execResult(result), time.Since(start).Seconds(), len(result.Stdout)+len(result.Stderr))
 	slog.Debug("exec", "sandbox", req.SandboxID, "cmd", req.Command, "exit", result.ExitCode)
 
 	writeJSON(w, http.StatusOK, execResp{
@@ -289,6 +305,7 @@ func (s *server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 	case s.execSem <- struct{}{}:
 		defer func() { <-s.execSem }()
 	default:
+		s.metrics.execThrottled(r.Context())
 		writeErr(w, http.StatusTooManyRequests, "concurrency limit reached, try again later")
 		return
 	}
@@ -315,14 +332,17 @@ func (s *server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 		wmu.Unlock()
 	}
 
+	start := time.Now()
 	result, err := s.adapter.ExecStream(ctx, req.SandboxID, req.Command, req.Args, req.Env, req.TimeoutSeconds, func(evtType, data string) {
 		writeEvent(evtType, data)
 	})
 	if err != nil {
+		s.metrics.recordExec(ctx, req.SandboxID, "error", time.Since(start).Seconds(), 0)
 		writeEvent("error", err.Error())
 		return
 	}
 
+	s.metrics.recordExec(ctx, req.SandboxID, execResult(result), time.Since(start).Seconds(), len(result.Stdout)+len(result.Stderr))
 	slog.Debug("exec/stream", "sandbox", req.SandboxID, "cmd", req.Command, "exit", result.ExitCode)
 
 	type exitEvent struct {
@@ -358,7 +378,12 @@ func (s *server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, code, msg)
 		return
 	}
-	writeJSON(w, http.StatusOK, fileReadResp{Path: req.Path, Content: s.truncateOutput(string(data))})
+
+	if !utf8.Valid(data) {
+		writeErr(w, http.StatusBadRequest, "file is not valid UTF-8 text; use the bash tool for binary files")
+		return
+	}
+	writeJSON(w, http.StatusOK, fileReadResp{Path: req.Path, Content: string(data)})
 }
 
 func (s *server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
@@ -376,7 +401,22 @@ func (s *server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := s.adapter.WriteFile(r.Context(), req.SandboxID, req.Path, req.Content)
+	content := req.Content
+	switch strings.ToLower(strings.TrimSpace(req.Encoding)) {
+	case "", "utf-8", "utf8":
+	case "base64":
+		decoded, err := base64.StdEncoding.DecodeString(req.Content)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid base64 content")
+			return
+		}
+		content = string(decoded)
+	default:
+		writeErr(w, http.StatusBadRequest, "encoding must be 'utf-8' or 'base64'")
+		return
+	}
+
+	n, err := s.adapter.WriteFile(r.Context(), req.SandboxID, req.Path, content)
 	if err != nil {
 		code, msg := adapterErrToHTTP(err)
 		writeErr(w, code, msg)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"boxy.dev/boxy/internal/nsjail"
+	"boxy.dev/boxy/internal/telemetry"
 )
 
 type config struct {
@@ -27,6 +28,7 @@ type config struct {
 	maxSandboxes       int
 	maxExecConcurrency int
 	maxOutputBytes     int
+	metricsPort        int
 	adapterConfig      nsjail.AdapterConfig
 }
 
@@ -41,6 +43,7 @@ func configFromEnv() (*config, error) {
 		maxSandboxes:       envInt("BOXY_MAX_SANDBOXES", 20),
 		maxExecConcurrency: envInt("BOXY_MAX_EXEC_CONCURRENCY", 50),
 		maxOutputBytes:     envInt("BOXY_MAX_OUTPUT_BYTES", 6<<20),
+		metricsPort:        envInt("BOXY_METRICS_PORT", 9090),
 		adapterConfig: nsjail.AdapterConfig{
 			NsjailPath:     envStr("BOXY_NSJAIL_PATH", "/usr/sbin/nsjail"),
 			DefaultRootfs:  envStr("BOXY_NSJAIL_ROOTFS", "/rootfs/ubuntu-24.04"),
@@ -59,8 +62,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	tp, err := telemetry.Init(ctx, telemetry.Options{ServiceName: "boxy-controller"})
+	if err != nil {
+		slog.Error("telemetry init", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), telemetry.ShutdownTimeout)
+		defer cancel()
+		_ = tp.Shutdown(shutdownCtx)
+	}()
+
+	metrics, err := newControllerMetrics(tp.Meter("boxy.dev/boxy/controller"))
+	if err != nil {
+		slog.Error("controller metrics", "err", err)
+		os.Exit(1)
+	}
+
 	adapter := nsjail.NewNsjailAdapter(cfg.adapterConfig)
-	srv := newServer(cfg, adapter)
+	srv := newServer(cfg, adapter, metrics, tp.MetricsHandler())
 	mux := srv.handler()
 
 	httpSrv := &http.Server{
@@ -78,8 +101,26 @@ func main() {
 		httpSrv.TLSConfig = tlsCfg
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// Metrics are served on a dedicated plaintext port so Prometheus can scrape
+	// them without the mTLS client cert the main API listener requires. The main
+	// mux also exposes /metrics (useful when mTLS is disabled in dev).
+	var metricsSrv *http.Server
+	if cfg.metricsPort > 0 && cfg.metricsPort != cfg.port {
+		mmux := http.NewServeMux()
+		mmux.HandleFunc("GET /healthz", srv.handleHealth)
+		mmux.Handle("GET /metrics", tp.MetricsHandler())
+		metricsSrv = &http.Server{
+			Addr:              fmt.Sprintf(":%d", cfg.metricsPort),
+			Handler:           mmux,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			slog.Info("boxy-controller metrics listening", "port", cfg.metricsPort)
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("metrics http", "err", err)
+			}
+		}()
+	}
 
 	go func() {
 		if cfg.mtlsDisabled {
@@ -98,6 +139,9 @@ func main() {
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if metricsSrv != nil {
+		_ = metricsSrv.Shutdown(shutdownCtx)
+	}
 	_ = httpSrv.Shutdown(shutdownCtx)
 }
 
