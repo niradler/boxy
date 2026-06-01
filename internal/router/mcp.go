@@ -110,9 +110,6 @@ func (s *Server) resolveToolSession(ctx context.Context, sandboxID, sessionID st
 	}
 
 	if session == nil {
-		// corpbot B2: an explicit X-Sandbox-Id resolves (and lazily creates) that sandbox's
-		// own session WITHOUT requiring the global default sandbox to be enabled. Only the
-		// no-id case falls back to the default-sandbox machinery.
 		var resolvedSessionID string
 		var resolveErr error
 		if strings.TrimSpace(sandboxID) != "" {
@@ -371,10 +368,6 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 	return s.resolveSandboxSession(ctx, sandboxID)
 }
 
-// resolveSandboxSession ensures the per-sandbox default session exists for an EXISTING
-// sandbox and returns (sandboxID, sessionID). Unlike resolveDefaultSession it is NOT gated by
-// DefaultSandboxEnabled, so an explicit X-Sandbox-Id can route to its own sandbox even when
-// the global default sandbox is disabled (corpbot B2). The sandbox must already exist.
 func (s *Server) resolveSandboxSession(ctx context.Context, sandboxID string) (string, string, error) {
 	sb, err := s.lookupSandbox(ctx, sandboxID)
 	if err != nil {
