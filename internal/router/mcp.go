@@ -110,13 +110,19 @@ func (s *Server) resolveToolSession(ctx context.Context, sandboxID, sessionID st
 	}
 
 	if session == nil {
-		_, resolvedSessionID, resolveErr := s.resolveDefaultSession(ctx, sandboxID)
+		var resolvedSessionID string
+		var resolveErr error
+		if strings.TrimSpace(sandboxID) != "" {
+			_, resolvedSessionID, resolveErr = s.resolveSandboxSession(ctx, sandboxID)
+		} else {
+			_, resolvedSessionID, resolveErr = s.resolveDefaultSession(ctx, sandboxID)
+		}
 		if resolveErr != nil {
-			return nil, toolErrResult("no session specified and default session unavailable: " + resolveErr.Error())
+			return nil, toolErrResult("no session specified and session unavailable: " + resolveErr.Error())
 		}
 		session, err = s.lookupSession(ctx, resolvedSessionID)
 		if err != nil || session == nil {
-			return nil, toolErrResult(fmt.Sprintf("default session %q not found", resolvedSessionID))
+			return nil, toolErrResult(fmt.Sprintf("session %q not found", resolvedSessionID))
 		}
 	}
 
@@ -359,6 +365,21 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 		}
 	}
 
+	return s.resolveSandboxSession(ctx, sandboxID)
+}
+
+func (s *Server) resolveSandboxSession(ctx context.Context, sandboxID string) (string, string, error) {
+	sb, err := s.lookupSandbox(ctx, sandboxID)
+	if err != nil {
+		return "", "", fmt.Errorf("lookup sandbox config: %w", err)
+	}
+	if err := s.canResourceAccess(ctx, "get", "sandboxes", sandboxID); err != nil {
+		return "", "", fmt.Errorf("forbidden")
+	}
+	if sb == nil {
+		return "", "", fmt.Errorf("sandbox %q not found", sandboxID)
+	}
+
 	prefix := sandboxID
 	if len(prefix) > 55 {
 		prefix = prefix[:55]
@@ -381,7 +402,7 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 		createCtx, cancel := context.WithTimeout(ctx, s.cfg.CreateTimeout+5*time.Second)
 		defer cancel()
 		if _, err := s.createAndWaitForSession(createCtx, defaultSessionID, sandboxID, "system"); err != nil {
-			return "", "", fmt.Errorf("create default session: %w", err)
+			return "", "", fmt.Errorf("create session: %w", err)
 		}
 	}
 
