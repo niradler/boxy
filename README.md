@@ -118,6 +118,15 @@ helm upgrade --install boxy ./deploy/helm/boxy \
   --set router.auth.staticToken="$(openssl rand -hex 16)"
 ```
 
+> **CRDs** (`sandboxes`, `sessions`, `controllerpools.boxy.dev`) ship in the chart's `crds/`
+> directory, so Helm installs and establishes them *before* any templated resource (including the
+> `ControllerPool` CR). This makes a one-shot `helm install` — including as an umbrella **subchart** —
+> work without a `no matches for kind` race. Per Helm's CRD rules, resources in `crds/` are installed
+> once and **not upgraded or deleted** by Helm: after pulling a release that changes the CRD schema,
+> re-apply them manually with `kubectl apply -f deploy/helm/boxy/crds/` (or
+> `helm template <rel> <chart> --show-only crds/...` for a published chart). They are never removed on
+> `helm uninstall`, so existing custom resources are preserved.
+
 ### First API calls
 
 The router accepts Kubernetes ServiceAccount tokens that authenticate with TokenReview
@@ -191,7 +200,7 @@ Create a sandbox config. Sessions created from this config become running sandbo
 | Field | Type | Description |
 |---|---|---|
 | `enabled` | bool | Default `true`. |
-| `allowInternetAccess` | bool | When `true`, disables network namespace isolation (sandbox shares the pod's network). |
+| `allowInternetAccess` | bool | When `true`, disables network namespace isolation (sandbox shares the **controller pod's** network namespace). ⚠️ **Multi-tenant caveat:** the operator bin-packs multiple sessions onto one controller pod (`maxSandboxesPerCtrl`, default 20), so with `allowInternetAccess: true` those co-located sessions share one netns — they can reach each other on localhost and share egress. With the default `false`, every session gets its own isolated (empty) netns. For per-user multi-tenant use with internet enabled, set `maxSandboxesPerCtrl: 1` (one user per pod) or a dedicated internet-enabled controller pool. |
 | `macvlan` | object | Clone a MACVLAN interface into the sandbox: `{ "interface": "eth0", "ip": "...", "netmask": "...", "gateway": "...", "mac": "..." }`. |
 | `usePasta` | bool | Use pasta userland networking instead of a network namespace. |
 
@@ -286,7 +295,20 @@ Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
 
-**Sandbox routing:** set `X-Sandbox-Id` to target a specific sandbox. Omit to use the default sandbox (when `BOXY_DEFAULT_SANDBOX_ENABLED=true`).
+**Routing headers** — two headers with distinct roles:
+
+| Header | Role |
+|---|---|
+| `X-Sandbox-Id` | The **config** to use: names an existing `Sandbox` CR (the shape — `allowedBinaries`, `vm`, `network`, TTL). |
+| `X-Session-Id` | The per-**user** runtime key: one reused session/sandbox per id. |
+
+Three ways to route:
+
+- **Per-user (recommended for multi-tenant):** send both headers. On first contact the router provisions a session named by `X-Session-Id`, bound to the config named by `X-Sandbox-Id` (which must already exist — configs are never auto-created). Subsequent calls reuse the running session. This is how one shared config serves many isolated users without a CR per user.
+- **Config only:** send just `X-Sandbox-Id` — a single shared session (`<sandboxId>-session`) is created/reused for that config.
+- **Default sandbox:** omit both — uses the default sandbox, only when `BOXY_DEFAULT_SANDBOX_ENABLED=true`.
+
+Selecting a config id that has no `Sandbox` CR fails explicitly (`sandbox "<id>" not found`); supplying `X-Session-Id` with no `X-Sandbox-Id` for a not-yet-created session also fails — config selection is always explicit.
 
 **Available tools:**
 
@@ -306,10 +328,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"cli","version":"1.0"},"capabilities":{}}}' \
   $BASE/mcp | jq .
 
-# MCP bash call
+# MCP bash call — per-user: config "demo-1", user session "u-alice"
 curl -sS -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -H 'X-Sandbox-Id: demo-1' \
+  -H 'X-Sandbox-Id: demo-1' -H 'X-Session-Id: u-alice' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bash","arguments":{"command":"echo hello from nsjail"}}}' \
   $BASE/mcp | jq .
 ```
