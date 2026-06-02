@@ -494,7 +494,7 @@ Sandbox-level network isolation is enforced by nsjail (isolated network namespac
 | Setting | Behavior |
 | ------- | -------- |
 | `allowInternetAccess: false` (default) | nsjail creates an isolated network namespace — sandbox has no external connectivity |
-| `allowInternetAccess: true` | `disable_clone_newnet: true` in proto — sandbox inherits the pod's host network |
+| `allowInternetAccess: true` | `disable_clone_newnet: true` in proto — sandbox inherits the **controller pod's** network namespace. ⚠️ Sessions are bin-packed onto controller pods (`maxSandboxesPerCtrl`), so co-located sessions then share one netns (mutual localhost reachability + shared egress). For per-user multi-tenant use with internet enabled, pin `maxSandboxesPerCtrl: 1` or use a dedicated internet-enabled pool. |
 | `macvlan: { interface: "eth0", ... }` | Clones a MACVLAN interface into the sandbox network namespace with an optional static IP/gateway |
 | `usePasta: true` | Uses pasta userland networking — sandbox gets NAT'd internet access without `NET_ADMIN` |
 

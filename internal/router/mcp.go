@@ -92,27 +92,53 @@ func toolError(text string) (*mcp.CallToolResult, any, error) {
 	return toolErrResult(text), nil, nil
 }
 
+// resolveToolSession maps the X-Session-Id / X-Sandbox-Id headers to a Running session.
+//
+// The two headers play distinct roles:
+//   - X-Session-Id is the per-user runtime key (one reused session/sandbox per user).
+//   - X-Sandbox-Id names the Sandbox *config* CR (the shape) the session is built from.
+//
+// When X-Session-Id is supplied but no such session exists yet, the session is created on
+// first contact, bound to the config named by X-Sandbox-Id (which must already exist). This is
+// the per-user provisioning path: callers do not pre-create a Session or a per-user config.
 func (s *Server) resolveToolSession(ctx context.Context, sandboxID, sessionID string) (*boxyv1.Session, *mcp.CallToolResult) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	sessionID = strings.TrimSpace(sessionID)
+
 	var session *boxyv1.Session
 	var err error
 
-	if strings.TrimSpace(sessionID) != "" {
+	if sessionID != "" {
 		session, err = s.lookupSession(ctx, sessionID)
 		if err != nil {
 			return nil, toolErrResult("store error: " + err.Error())
 		}
-		if session == nil {
-			return nil, toolErrResult(fmt.Sprintf("session %q not found", sessionID))
-		}
-		if strings.TrimSpace(sandboxID) != "" && session.Spec.SandboxID != sandboxID {
-			return nil, toolErrResult(fmt.Sprintf("session %q does not belong to sandbox %q", sessionID, sandboxID))
+		if session != nil {
+			if sandboxID != "" && session.Spec.SandboxID != sandboxID {
+				return nil, toolErrResult(fmt.Sprintf("session %q does not belong to sandbox %q", sessionID, sandboxID))
+			}
+		} else {
+			if sandboxID == "" {
+				return nil, toolErrResult(fmt.Sprintf("session %q not found and no sandbox id provided to create it", sessionID))
+			}
+			if err := api.ValidateSessionID(sessionID); err != nil {
+				return nil, toolErrResult("invalid session id format")
+			}
+			_, resolvedSessionID, resolveErr := s.ensureSession(ctx, sessionID, sandboxID, sessionID)
+			if resolveErr != nil {
+				return nil, toolErrResult("session unavailable: " + resolveErr.Error())
+			}
+			session, err = s.lookupSession(ctx, resolvedSessionID)
+			if err != nil || session == nil {
+				return nil, toolErrResult(fmt.Sprintf("session %q not found", resolvedSessionID))
+			}
 		}
 	}
 
 	if session == nil {
 		var resolvedSessionID string
 		var resolveErr error
-		if strings.TrimSpace(sandboxID) != "" {
+		if sandboxID != "" {
 			_, resolvedSessionID, resolveErr = s.resolveSandboxSession(ctx, sandboxID)
 		} else {
 			_, resolvedSessionID, resolveErr = s.resolveDefaultSession(ctx, sandboxID)
@@ -368,7 +394,21 @@ func (s *Server) resolveDefaultSession(ctx context.Context, sandboxID string) (s
 	return s.resolveSandboxSession(ctx, sandboxID)
 }
 
+// resolveSandboxSession resolves the single shared session for a config when only X-Sandbox-Id
+// is supplied (no per-user X-Session-Id). The session id is derived from the config id.
 func (s *Server) resolveSandboxSession(ctx context.Context, sandboxID string) (string, string, error) {
+	prefix := sandboxID
+	if len(prefix) > 55 {
+		prefix = prefix[:55]
+	}
+	return s.ensureSession(ctx, prefix+"-session", sandboxID, "system")
+}
+
+// ensureSession makes sure a non-terminated session named sessionID exists, bound to the
+// Sandbox config named sandboxID. The config CR must already exist — sessions are never
+// created for an unknown config. A Running/Pending session is reused as-is; a Terminated one
+// is deleted and recreated.
+func (s *Server) ensureSession(ctx context.Context, sessionID, sandboxID, owner string) (string, string, error) {
 	sb, err := s.lookupSandbox(ctx, sandboxID)
 	if err != nil {
 		return "", "", fmt.Errorf("lookup sandbox config: %w", err)
@@ -380,31 +420,27 @@ func (s *Server) resolveSandboxSession(ctx context.Context, sandboxID string) (s
 		return "", "", fmt.Errorf("sandbox %q not found", sandboxID)
 	}
 
-	prefix := sandboxID
-	if len(prefix) > 55 {
-		prefix = prefix[:55]
-	}
-	defaultSessionID := prefix + "-session"
-
-	sess, err := s.lookupSession(ctx, defaultSessionID)
+	sess, err := s.lookupSession(ctx, sessionID)
 	if err != nil {
 		return "", "", err
 	}
-	if sess == nil || sess.Status.Phase == boxyv1.SandboxPhaseTerminated {
-		if err := s.canResourceAccess(ctx, "create", "sessions", defaultSessionID); err != nil {
-			return "", "", fmt.Errorf("forbidden")
-		}
-		if sess != nil {
-			if err := s.k8sClient.Delete(ctx, sess); err != nil {
-				return "", "", fmt.Errorf("delete terminated session: %w", err)
-			}
-		}
-		createCtx, cancel := context.WithTimeout(ctx, s.cfg.CreateTimeout+5*time.Second)
-		defer cancel()
-		if _, err := s.createAndWaitForSession(createCtx, defaultSessionID, sandboxID, "system"); err != nil {
-			return "", "", fmt.Errorf("create session: %w", err)
-		}
+	if sess != nil && sess.Status.Phase != boxyv1.SandboxPhaseTerminated {
+		return sandboxID, sessionID, nil
 	}
 
-	return sandboxID, defaultSessionID, nil
+	if err := s.canResourceAccess(ctx, "create", "sessions", sessionID); err != nil {
+		return "", "", fmt.Errorf("forbidden")
+	}
+	if sess != nil {
+		if err := s.k8sClient.Delete(ctx, sess); err != nil {
+			return "", "", fmt.Errorf("delete terminated session: %w", err)
+		}
+	}
+	createCtx, cancel := context.WithTimeout(ctx, s.cfg.CreateTimeout+5*time.Second)
+	defer cancel()
+	if _, err := s.createAndWaitForSession(createCtx, sessionID, sandboxID, owner); err != nil {
+		return "", "", fmt.Errorf("create session: %w", err)
+	}
+
+	return sandboxID, sessionID, nil
 }
