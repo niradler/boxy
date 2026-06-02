@@ -105,6 +105,12 @@ func (s *Server) resolveToolSession(ctx context.Context, sandboxID, sessionID st
 	sandboxID = strings.TrimSpace(sandboxID)
 	sessionID = strings.TrimSpace(sessionID)
 
+	if sandboxID != "" {
+		if err := api.ValidateSandboxID(sandboxID); err != nil {
+			return nil, toolErrResult("invalid sandbox id format")
+		}
+	}
+
 	var session *boxyv1.Session
 	var err error
 

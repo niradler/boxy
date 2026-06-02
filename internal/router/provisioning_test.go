@@ -196,3 +196,35 @@ func TestEnsureSession_RecreatesTerminated(t *testing.T) {
 		t.Errorf("recreated session phase = %v, want Running", final)
 	}
 }
+
+func TestResolveToolSession_InvalidSandboxIdRejected(t *testing.T) {
+	srv := newTestServer(t, "http://127.0.0.1:8080", nil)
+
+	_, errRes := srv.resolveToolSession(devCtx(), "Bad_Id!", "u-eve")
+	if errRes == nil {
+		t.Fatal("expected error for invalid sandbox id")
+	}
+	if !strings.Contains(errText(errRes), "invalid sandbox id format") {
+		t.Errorf("error = %q, want \"invalid sandbox id format\"", errText(errRes))
+	}
+	if n := countSessions(t, srv); n != 0 {
+		t.Errorf("created %d sessions, want 0", n)
+	}
+}
+
+func TestCreateAndWaitForSession_ToleratesAlreadyExists(t *testing.T) {
+	sb := testSandbox("cfg-default", "default")
+	existing := testSession("u-dave", "u-dave", "default", "u-dave", 0, boxyv1.SandboxPhaseRunning)
+	srv := newTestServer(t, "http://127.0.0.1:8080", []runtime.Object{sb, existing})
+
+	sess, err := srv.createAndWaitForSession(devCtx(), "u-dave", "default", "u-dave")
+	if err != nil {
+		t.Fatalf("createAndWaitForSession should tolerate AlreadyExists, got: %v", err)
+	}
+	if sess.Status.Phase != boxyv1.SandboxPhaseRunning {
+		t.Errorf("phase = %q, want Running", sess.Status.Phase)
+	}
+	if n := countSessions(t, srv); n != 1 {
+		t.Errorf("sessions = %d, want 1 (no duplicate on AlreadyExists)", n)
+	}
+}

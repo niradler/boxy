@@ -440,12 +440,14 @@ func (s *Server) EnsureDefaultSandbox(ctx context.Context) error {
 		return nil
 	}
 	id := s.cfg.DefaultSandboxConfig.SandboxID
-	existing, _ := s.lookupSandbox(ctx, id)
+	existing, err := s.lookupSandbox(ctx, id)
+	if err != nil {
+		return fmt.Errorf("lookup default sandbox: %w", err)
+	}
 	if existing != nil {
 		return nil
 	}
-	_, err := s.createSandboxFromBody(ctx, s.cfg.DefaultSandboxConfig)
-	if err != nil {
+	if _, err = s.createSandboxFromBody(ctx, s.cfg.DefaultSandboxConfig); err != nil {
 		return fmt.Errorf("create default sandbox: %w", err)
 	}
 	s.log.Info("default sandbox created", "sandboxId", id)
@@ -533,7 +535,7 @@ func (s *Server) createAndWaitForSession(ctx context.Context, sessionID, sandbox
 		},
 	}
 
-	if err := s.k8sClient.Create(ctx, sess); err != nil {
+	if err := s.k8sClient.Create(ctx, sess); err != nil && !apierrors.IsAlreadyExists(err) {
 		return nil, fmt.Errorf("create session CR: %w", err)
 	}
 
